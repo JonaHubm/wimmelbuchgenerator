@@ -6,7 +6,8 @@
 - GitHub Pages URL: https://jonahubm.github.io/wimmelbuchgenerator/
 - Local workspace: `/Users/taahujo7/Documents/Codex/Wimmelbuch`
 - Branch: `main`
-- Latest pushed commit at handoff: `95b7037 Deploy static app to GitHub Pages`
+- Latest application/deployment commit before this handoff: `95b7037 Deploy static app to GitHub Pages`
+- Handoff documentation is tracked in `NEXT_SESSION.md` on `main`.
 
 The current MVP is a static Next.js app that runs fully in the browser so it can be hosted on GitHub Pages. It supports project configuration, image upload, character definition, three local generated variants per page, adding pages to a book, and browser-side PDF export.
 
