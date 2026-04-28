@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { ChangeEvent, useMemo, useState } from "react";
 import { BookPageThumb, ScenePreview } from "@/components/scene-preview";
+import { createBookPdf } from "@/lib/pdf-export";
 import {
   BookPage,
   GeneratedVariant,
@@ -24,6 +25,7 @@ import {
   ProjectConfig,
   SourcePage,
   characterInitials,
+  createWimmelbuchVariants,
   defaultProject,
   formatLabels,
   styleLabels,
@@ -74,17 +76,6 @@ async function compressImage(file: File) {
 
   context.drawImage(image, 0, 0, width, height);
   return canvas.toDataURL("image/jpeg", 0.82);
-}
-
-async function fetchJson<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
-  const response = await fetch(input, init);
-
-  if (!response.ok) {
-    const payload = await response.json().catch(() => null);
-    throw new Error(payload?.error ?? `Request failed with ${response.status}`);
-  }
-
-  return response.json() as Promise<T>;
 }
 
 function FieldLabel({ children }: { children: React.ReactNode }) {
@@ -248,13 +239,10 @@ export function WimmelbuchGenerator() {
     setError("");
 
     try {
-      const payload = await fetchJson<{ variants: GeneratedVariant[] }>("/api/generate-page", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ project, source, characters }),
-      });
-      setVariants(payload.variants);
-      setSelectedVariantId(payload.variants[0]?.id ?? null);
+      await new Promise((resolve) => window.requestAnimationFrame(resolve));
+      const nextVariants = createWimmelbuchVariants(project, source, characters);
+      setVariants(nextVariants);
+      setSelectedVariantId(nextVariants[0]?.id ?? null);
       setStatus("ready");
       setPhase(1);
     } catch (requestError) {
@@ -292,18 +280,10 @@ export function WimmelbuchGenerator() {
     setError("");
 
     try {
-      const response = await fetch("/api/export-pdf", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ project, pages: bookPages }),
-      });
-
-      if (!response.ok) {
-        const payload = await response.json().catch(() => null);
-        throw new Error(payload?.error ?? "PDF export failed");
-      }
-
-      const blob = await response.blob();
+      const bytes = await createBookPdf(project, bookPages);
+      const pdfBuffer = new ArrayBuffer(bytes.byteLength);
+      new Uint8Array(pdfBuffer).set(bytes);
+      const blob = new Blob([pdfBuffer], { type: "application/pdf" });
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;

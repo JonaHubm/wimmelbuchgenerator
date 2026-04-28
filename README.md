@@ -7,11 +7,11 @@ A full-stack Next.js application for creating personalized hidden-object picture
 - Configure a book title, creator, page count, format, visual style, source fidelity, and scene complexity.
 - Upload a source image for each page.
 - Define up to five hidden characters with clues, colors, and optional reference images.
-- Generate three selectable Wimmelbuch-style variants per page through a backend API.
+- Generate three selectable Wimmelbuch-style variants per page directly in the browser.
 - Add selected pages into a sequential book queue.
-- Export the current book as a PDF from a server-side route.
+- Export the current book as a PDF in the browser.
 
-The first iteration uses a deterministic local generation engine so the app is testable without API keys. The API boundary is already shaped for a future image-model provider.
+The first iteration uses a deterministic local generation engine so the app is testable without API keys and can be hosted on GitHub Pages.
 
 ## Tech Stack
 
@@ -47,21 +47,24 @@ npm run start   # production server
 src/app/page.tsx                  Main app entry
 src/components/wimmelbuch-generator.tsx
 src/components/scene-preview.tsx
-src/app/api/generate-page/route.ts
-src/app/api/export-pdf/route.ts
 src/lib/wimmelbuch.ts
+src/lib/pdf-export.ts
 ```
 
 ## Deployment
 
-The app is ready for GitHub plus Vercel:
+The app is configured for GitHub Pages:
 
-1. Create a GitHub repository.
-2. Push this project to the repository.
-3. Import the repository in Vercel.
-4. Vercel will detect Next.js and run `npm run build`.
+1. Push to `main`.
+2. In GitHub, open **Settings -> Pages**.
+3. Set **Build and deployment** to **GitHub Actions**.
+4. The workflow publishes the static export to:
 
-GitHub Pages is not a good target for this project because the app uses backend API routes for generation and PDF export.
+```text
+https://jonahubm.github.io/wimmelbuchgenerator/
+```
+
+For a future production version with real image-generation APIs, use Vercel or another backend-capable host.
 
 ## Next Milestones
 
