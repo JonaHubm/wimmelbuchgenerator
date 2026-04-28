@@ -2,6 +2,12 @@
 
 A full-stack Next.js application for creating personalized hidden-object picture books from uploaded place photos and custom characters.
 
+Live app:
+
+```text
+https://jonahubm.github.io/wimmelbuchgenerator/
+```
+
 ## Current MVP
 
 - Configure a book title, creator, page count, format, visual style, source fidelity, and scene complexity.
@@ -68,8 +74,14 @@ For a future production version with real image-generation APIs, use Vercel or a
 
 ## Next Milestones
 
-- Add persistence for saved projects, uploaded assets, and generated pages.
+- Add autosave, restore, project import, and project export.
+- Improve PDF layout for print readiness.
+- QA the public GitHub Pages URL on desktop and mobile.
 - Replace the local generator with a real image-model adapter.
 - Add authentication and shareable project links.
 - Store large uploaded images in object storage instead of JSON payloads.
 - Add print-on-demand export integration.
+
+## Next Session
+
+See [NEXT_SESSION.md](./NEXT_SESSION.md) for the handoff, next-sprint scope, acceptance criteria, and QA checklist.
