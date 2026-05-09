@@ -17,9 +17,16 @@ import {
 } from "lucide-react";
 import { ChangeEvent, useMemo, useState } from "react";
 import { BookPageThumb, ScenePreview } from "@/components/scene-preview";
+import {
+  GenerateCharacterResponse,
+  GeneratePageResponse,
+  createRealGeneratedVariant,
+} from "@/lib/openai-wimmelbuch";
+import type { PublicAiStatus } from "@/lib/access-control";
 import { createBookPdf } from "@/lib/pdf-export";
 import {
   BookPage,
+  CharacterPlacement,
   GeneratedVariant,
   HiddenCharacter,
   ProjectConfig,
@@ -35,6 +42,8 @@ import {
 const characterColors = ["#ef476f", "#118ab2", "#06d6a0", "#ffd166", "#f77f00"];
 
 type GenerationStatus = "idle" | "loading" | "ready" | "error";
+type GeneratorMode = "openai" | "mock";
+type GenerationQuality = "low" | "medium" | "high";
 
 function cx(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(" ");
@@ -150,7 +159,7 @@ function SegmentedPhase({
   );
 }
 
-export function WimmelbuchGenerator() {
+export function WimmelbuchGenerator({ initialAiStatus }: { initialAiStatus: PublicAiStatus }) {
   const [phase, setPhase] = useState(0);
   const [project, setProject] = useState<ProjectConfig>(defaultProject);
   const [characters, setCharacters] = useState<HiddenCharacter[]>([
@@ -175,11 +184,28 @@ export function WimmelbuchGenerator() {
   const [error, setError] = useState("");
   const [revealTargets, setRevealTargets] = useState(true);
   const [isExporting, setIsExporting] = useState(false);
+  const [generatorMode, setGeneratorMode] = useState<GeneratorMode>("mock");
+  const [generationQuality, setGenerationQuality] = useState<GenerationQuality>("medium");
+  const [rightsConfirmed, setRightsConfirmed] = useState(false);
+  const [selectedPlacementCharacterId, setSelectedPlacementCharacterId] = useState<string | null>(null);
+  const [pagePlacements, setPagePlacements] = useState<Record<string, CharacterPlacement>>({});
+  const [characterStatus, setCharacterStatus] = useState<Record<string, GenerationStatus>>({});
+  const [aiStatus, setAiStatus] = useState<PublicAiStatus>(initialAiStatus);
 
   const selectedVariant = variants.find((variant) => variant.id === selectedVariantId) ?? variants[0];
   const pageNumber = bookPages.length + 1;
   const canGenerate = Boolean(source && characters.length > 0);
   const isBookComplete = bookPages.length >= project.targetPages;
+  const canUseLiveAi = aiStatus.liveAiAvailable;
+  const liveAiLabel =
+    aiStatus.status === "active"
+      ? "active"
+      : aiStatus.status === "limit-reached"
+        ? "limit reached"
+        : aiStatus.status === "missing-key"
+          ? "missing key"
+          : "paused";
+  const liveAiDetail = `${aiStatus.sessionRemaining}/${aiStatus.sessionLimit} live generations remaining`;
 
   const roster = useMemo(
     () =>
@@ -188,6 +214,7 @@ export function WimmelbuchGenerator() {
         .join(" / "),
     [characters],
   );
+
 
   function updateProject<T extends keyof ProjectConfig>(key: T, value: ProjectConfig[T]) {
     setProject((current) => ({ ...current, [key]: value }));
@@ -208,6 +235,8 @@ export function WimmelbuchGenerator() {
     });
     setVariants([]);
     setSelectedVariantId(null);
+    setPagePlacements({});
+    setSelectedPlacementCharacterId(null);
     setStatus("idle");
     setError("");
     setPhase(1);
@@ -227,7 +256,73 @@ export function WimmelbuchGenerator() {
         character.id === characterId ? { ...character, referenceImage: image } : character,
       ),
     );
+    setCharacterStatus((current) => ({ ...current, [characterId]: "ready" }));
     event.target.value = "";
+  }
+
+  async function generateCharacterReference(character: HiddenCharacter) {
+    if (generatorMode === "openai" && !canUseLiveAi) {
+      setError("Live AI is paused, missing configuration, or the session limit is reached. Mock mode remains available.");
+      return;
+    }
+
+    if (generatorMode === "openai" && !rightsConfirmed) {
+      setError("Please confirm that you have the rights to use uploaded images before generating references.");
+      return;
+    }
+
+    setError("");
+    setCharacterStatus((current) => ({ ...current, [character.id]: "loading" }));
+
+    try {
+      const response = await fetch("/api/generate-character", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          project,
+          character: {
+            id: character.id,
+            name: character.name,
+            clue: character.clue,
+            color: character.color,
+          },
+          quality: generationQuality,
+        }),
+      });
+      const payload = await response.json();
+
+      if (!response.ok) {
+        if (payload?.ai) {
+          setAiStatus(payload.ai as PublicAiStatus);
+        }
+
+        throw new Error(
+          typeof payload?.error === "string"
+            ? payload.error
+            : "OpenAI character generation failed. Upload a reference image instead.",
+        );
+      }
+
+      const characterPayload = payload as GenerateCharacterResponse;
+
+      if (characterPayload.ai) {
+        setAiStatus(characterPayload.ai);
+      }
+
+      setCharacters((current) =>
+        current.map((item) =>
+          item.id === character.id
+            ? { ...item, referenceImage: characterPayload.image }
+            : item,
+        ),
+      );
+      setCharacterStatus((current) => ({ ...current, [character.id]: "ready" }));
+    } catch (characterError) {
+      setError(characterError instanceof Error ? characterError.message : "Character generation failed");
+      setCharacterStatus((current) => ({ ...current, [character.id]: "error" }));
+    }
   }
 
   async function generateVariants() {
@@ -235,12 +330,76 @@ export function WimmelbuchGenerator() {
       return;
     }
 
+    if (generatorMode === "openai" && !canUseLiveAi) {
+      setError("Live AI is paused, missing configuration, or the session limit is reached. Mock mode remains available.");
+      setStatus("error");
+      return;
+    }
+
+    if (generatorMode === "openai" && !rightsConfirmed) {
+      setError("Please confirm that you have the rights to use the uploaded source and reference images.");
+      setStatus("error");
+      return;
+    }
+
     setStatus("loading");
     setError("");
 
     try {
-      await new Promise((resolve) => window.requestAnimationFrame(resolve));
-      const nextVariants = createWimmelbuchVariants(project, source, characters);
+      let nextVariants: GeneratedVariant[];
+
+      if (generatorMode === "openai") {
+        const response = await fetch("/api/generate-page", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            project,
+            source,
+            characters,
+            placements: pagePlacements,
+            quality: generationQuality,
+            variantCount: 1,
+            rightsConfirmed,
+          }),
+        });
+        const payload = await response.json();
+
+        if (!response.ok) {
+          if (payload?.ai) {
+            setAiStatus(payload.ai as PublicAiStatus);
+          }
+
+          throw new Error(
+            typeof payload?.error === "string"
+              ? payload.error
+              : "OpenAI generation failed. Use Mock mode if the backend is not configured.",
+          );
+        }
+
+        const pagePayload = payload as GeneratePageResponse;
+
+        if (pagePayload.ai) {
+          setAiStatus(pagePayload.ai);
+        }
+
+        nextVariants = pagePayload.variants.map((variant, index) =>
+          createRealGeneratedVariant({
+            image: variant.generatedImage,
+            prompt: variant.generationPrompt,
+            project,
+            source,
+            quality: variant.quality,
+            model: variant.model,
+            index,
+          }),
+        );
+      } else {
+        await new Promise((resolve) => window.requestAnimationFrame(resolve));
+        nextVariants = createWimmelbuchVariants(project, source, characters, pagePlacements);
+      }
+
       setVariants(nextVariants);
       setSelectedVariantId(nextVariants[0]?.id ?? null);
       setStatus("ready");
@@ -267,6 +426,8 @@ export function WimmelbuchGenerator() {
     setSource(null);
     setVariants([]);
     setSelectedVariantId(null);
+    setPagePlacements({});
+    setSelectedPlacementCharacterId(null);
     setStatus("idle");
     setPhase(2);
   }
@@ -313,10 +474,33 @@ export function WimmelbuchGenerator() {
     ]);
   }
 
+  function setCharacterPlacement(characterId: string, placement: CharacterPlacement) {
+    setPagePlacements((current) => {
+      if (placement.mode === "random") {
+        const next = { ...current };
+        delete next[characterId];
+        return next;
+      }
+
+      return { ...current, [characterId]: placement };
+    });
+  }
+
+  function pickManualPlacement(x: number, y: number) {
+    if (!selectedPlacementCharacterId) {
+      return;
+    }
+
+    setCharacterPlacement(selectedPlacementCharacterId, { mode: "manual", x, y });
+    setSelectedPlacementCharacterId(null);
+  }
+
   function resetCurrentPage() {
     setSource(null);
     setVariants([]);
     setSelectedVariantId(null);
+    setPagePlacements({});
+    setSelectedPlacementCharacterId(null);
     setStatus("idle");
     setError("");
     setPhase(0);
@@ -456,12 +640,76 @@ export function WimmelbuchGenerator() {
                   value={project.additions}
                 />
               </div>
+              <div className="space-y-2">
+                <FieldLabel>Generator</FieldLabel>
+                <div className="grid grid-cols-2 border border-black/10 bg-[#fdfbf5] p-1">
+                  {(["openai", "mock"] as GeneratorMode[]).map((mode) => (
+                    <button
+                      className={cx(
+                        "h-9 text-sm font-black capitalize text-neutral-600 transition disabled:cursor-not-allowed disabled:opacity-35",
+                        generatorMode === mode && "bg-black text-white",
+                      )}
+                      disabled={mode === "openai" && !canUseLiveAi}
+                      key={mode}
+                      onClick={() => {
+                        setGeneratorMode(mode);
+                        setError("");
+                      }}
+                      type="button"
+                    >
+                      {mode}
+                    </button>
+                  ))}
+                </div>
+                <div className="border border-black/10 bg-white px-3 py-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-bold uppercase tracking-[0.14em] text-neutral-500">Live AI</span>
+                    <span
+                      className={cx(
+                        "text-xs font-black uppercase tracking-[0.12em]",
+                        canUseLiveAi ? "text-[#118ab2]" : "text-neutral-500",
+                      )}
+                    >
+                      {liveAiLabel}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-xs font-semibold text-neutral-500">{liveAiDetail}</p>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <FieldLabel>Quality</FieldLabel>
+                <select
+                  className="h-11 w-full border border-black/10 bg-[#fdfbf5] px-3 text-sm font-semibold outline-none transition focus:border-black"
+                  disabled={generatorMode === "mock" || !canUseLiveAi}
+                  onChange={(event) => setGenerationQuality(event.target.value as GenerationQuality)}
+                  value={generationQuality}
+                >
+                  <option value="low">Low preview</option>
+                  <option value="medium">Medium showcase</option>
+                  <option value="high">High print test</option>
+                </select>
+              </div>
+              <label className="flex items-start gap-3 border border-black/10 bg-[#fdfbf5] p-3 text-xs font-semibold leading-5 text-neutral-600">
+                <input
+                  checked={rightsConfirmed}
+                  className="mt-1 accent-black"
+                  onChange={(event) => setRightsConfirmed(event.target.checked)}
+                  type="checkbox"
+                />
+                <span>
+                  I confirm that I have the rights to use all uploaded source and reference images for this
+                  generation.
+                </span>
+              </label>
             </div>
           </section>
 
           <section className={cx("border border-black/10 bg-white p-4 shadow-sm", phase !== 0 && "hidden lg:block")}>
             <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-lg font-black">Characters</h2>
+              <div>
+                <h2 className="text-lg font-black">Character sheet</h2>
+                <p className="text-xs font-bold text-neutral-500">Define each recurring figure once.</p>
+              </div>
               <IconButton disabled={characters.length >= 5} onClick={addCharacter} title="Add character">
                 <Plus className="h-4 w-4" />
               </IconButton>
@@ -469,6 +717,12 @@ export function WimmelbuchGenerator() {
             <div className="space-y-3">
               {characters.map((character, index) => (
                 <div className="border border-black/10 bg-[#fdfbf5] p-3" key={character.id}>
+                  {(() => {
+                    const placement = pagePlacements[character.id];
+                    const status = characterStatus[character.id] ?? "idle";
+
+                    return (
+                      <>
                   <div className="mb-3 flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2">
                       <span
@@ -512,6 +766,97 @@ export function WimmelbuchGenerator() {
                     }
                     value={character.clue}
                   />
+                  <div className="mb-3 grid gap-3 sm:grid-cols-[96px_minmax(0,1fr)]">
+                    <div className="flex aspect-square items-center justify-center overflow-hidden border border-black/10 bg-white">
+                      {character.referenceImage ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          alt={`${character.name} reference`}
+                          className="h-full w-full object-cover"
+                          src={character.referenceImage}
+                        />
+                      ) : (
+                        <span
+                          className="grid h-12 w-12 place-items-center border border-black/15 text-sm font-black"
+                          style={{ backgroundColor: character.color }}
+                        >
+                          {characterInitials(character.name)}
+                        </span>
+                      )}
+                    </div>
+                    <div className="space-y-2">
+                      <FieldLabel>Approved look</FieldLabel>
+                      <div className="grid grid-cols-2 gap-2">
+                        <label className="flex h-9 cursor-pointer items-center justify-center gap-2 border border-black/10 bg-white px-2 text-xs font-black text-neutral-700 transition hover:border-black/25">
+                          <ImagePlus className="h-4 w-4" />
+                          Upload
+                          <input
+                            accept="image/*"
+                            className="sr-only"
+                            onChange={(event) => handleReferenceImage(character.id, event)}
+                            type="file"
+                          />
+                        </label>
+                        <button
+                          className="flex h-9 items-center justify-center gap-2 border border-black/10 bg-white px-2 text-xs font-black text-neutral-700 transition hover:border-black/25 disabled:cursor-not-allowed disabled:opacity-45"
+                          disabled={status === "loading" || generatorMode === "mock" || !canUseLiveAi}
+                          onClick={() => generateCharacterReference(character)}
+                          type="button"
+                        >
+                          {status === "loading" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+                          Generate
+                        </button>
+                      </div>
+                      <p className="text-xs font-semibold text-neutral-500">
+                        {character.referenceImage
+                          ? "This reference is reused on every page for consistency."
+                          : "Upload or generate a stable reference before making many pages."}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="mb-3 space-y-2">
+                    <FieldLabel>Page placement</FieldLabel>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        className={cx(
+                          "h-9 border px-2 text-xs font-black transition",
+                          placement?.mode !== "manual"
+                            ? "border-black bg-black text-white"
+                            : "border-black/10 bg-white text-neutral-700 hover:border-black/25",
+                        )}
+                        onClick={() => {
+                          setCharacterPlacement(character.id, { mode: "random" });
+                          if (selectedPlacementCharacterId === character.id) {
+                            setSelectedPlacementCharacterId(null);
+                          }
+                        }}
+                        type="button"
+                      >
+                        Random
+                      </button>
+                      <button
+                        className={cx(
+                          "h-9 border px-2 text-xs font-black transition",
+                          selectedPlacementCharacterId === character.id
+                            ? "border-black bg-[#ffd166] text-black"
+                            : placement?.mode === "manual"
+                              ? "border-black bg-black text-white"
+                              : "border-black/10 bg-white text-neutral-700 hover:border-black/25",
+                        )}
+                        onClick={() => setSelectedPlacementCharacterId(character.id)}
+                        type="button"
+                      >
+                        {placement?.mode === "manual" ? "Change" : "Pick"}
+                      </button>
+                    </div>
+                    <p className="text-xs font-semibold text-neutral-500">
+                      {selectedPlacementCharacterId === character.id
+                        ? "Click the source image."
+                        : placement?.mode === "manual"
+                          ? `Manual point for this page: ${Math.round(placement.x)}%, ${Math.round(placement.y)}%.`
+                          : "OpenAI chooses a hiding place."}
+                    </p>
+                  </div>
                   <div className="flex items-center justify-between">
                     <div className="flex gap-1">
                       {characterColors.map((color) => (
@@ -534,31 +879,22 @@ export function WimmelbuchGenerator() {
                         />
                       ))}
                     </div>
-                    <label
-                      className="grid h-8 w-8 cursor-pointer place-items-center border border-black/10 bg-white text-neutral-700 transition hover:border-black/25"
-                      title="Upload reference"
-                    >
-                      <ImagePlus className="h-4 w-4" />
-                      <input
-                        accept="image/*"
-                        className="sr-only"
-                        onChange={(event) => handleReferenceImage(character.id, event)}
-                        type="file"
-                      />
-                    </label>
+                    {character.referenceImage ? (
+                      <div className="flex items-center gap-2 text-xs font-semibold text-neutral-500">
+                        <span className="h-2 w-2 bg-[#06d6a0]" />
+                        Reference ready
+                      </div>
+                    ) : null}
                   </div>
-                  {character.referenceImage ? (
-                    <div className="mt-3 flex items-center gap-2 text-xs font-semibold text-neutral-500">
-                      <span className="h-2 w-2 bg-[#06d6a0]" />
-                      Reference loaded
-                    </div>
-                  ) : null}
                   <input
                     className="sr-only"
                     readOnly
                     tabIndex={-1}
                     value={`character-${index + 1}`}
                   />
+                      </>
+                    );
+                  })()}
                 </div>
               ))}
             </div>
@@ -595,7 +931,13 @@ export function WimmelbuchGenerator() {
               </label>
               <button
                 className="flex h-12 items-center justify-center gap-2 border border-black/10 bg-[#ffd166] px-3 text-sm font-black text-black transition hover:bg-[#f6c550] disabled:cursor-not-allowed disabled:opacity-45"
-                disabled={!canGenerate || status === "loading" || isBookComplete}
+                disabled={
+                  !canGenerate ||
+                  status === "loading" ||
+                  isBookComplete ||
+                  (generatorMode === "openai" && !canUseLiveAi) ||
+                  (generatorMode === "openai" && !rightsConfirmed)
+                }
                 onClick={generateVariants}
                 type="button"
               >
@@ -607,20 +949,37 @@ export function WimmelbuchGenerator() {
 
           <div className="border border-black/10 bg-white p-4 shadow-sm">
             <ScenePreview
-              image={source?.sourceImage ?? bookPages.at(-1)?.sourceImage}
+              image={source?.sourceImage}
               label={selectedVariant ? selectedVariant.name : source ? "Source image" : "Workspace"}
+              activePlacementCharacterId={selectedPlacementCharacterId}
+              onPickPlacement={source && !selectedVariant ? pickManualPlacement : undefined}
+              placements={source && !selectedVariant ? pagePlacements : {}}
               revealTargets={revealTargets}
               variant={selectedVariant}
               characters={characters}
             />
+            {source && !selectedVariant && selectedPlacementCharacterId ? (
+              <p className="mt-3 border border-black/10 bg-[#fdfbf5] px-3 py-2 text-sm font-semibold text-neutral-600">
+                Click the source image to choose where this character should be hidden.
+              </p>
+            ) : null}
             <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-center gap-2">
-                <IconButton active={revealTargets} onClick={() => setRevealTargets((current) => !current)} title="Reveal targets">
-                  <Eye className="h-4 w-4" />
-                </IconButton>
-                <IconButton onClick={resetCurrentPage} title="Reset current page">
-                  <RefreshCcw className="h-4 w-4" />
-                </IconButton>
+                {selectedVariant && !selectedVariant.generatedImage ? (
+                  <IconButton active={revealTargets} onClick={() => setRevealTargets((current) => !current)} title="Reveal targets">
+                    <Eye className="h-4 w-4" />
+                  </IconButton>
+                ) : null}
+                {source || variants.length > 0 ? (
+                  <button
+                    className="flex h-10 items-center justify-center gap-2 border border-black/10 bg-white px-3 text-sm font-black text-neutral-800 shadow-sm transition hover:border-black/25 hover:bg-neutral-50"
+                    onClick={resetCurrentPage}
+                    type="button"
+                  >
+                    <RefreshCcw className="h-4 w-4" />
+                    Clear page
+                  </button>
+                ) : null}
               </div>
               <button
                 className="flex h-11 items-center justify-center gap-2 border border-black bg-black px-4 text-sm font-black text-white transition hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-40"
@@ -638,8 +997,14 @@ export function WimmelbuchGenerator() {
             <div className="border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">{error}</div>
           ) : null}
 
-          <div className={cx("grid gap-3 md:grid-cols-3", phase === 0 && variants.length === 0 && "hidden lg:grid")}>
-            {variants.length > 0
+          <div
+            className={cx(
+              "grid gap-3",
+              generatorMode === "mock" && "md:grid-cols-3",
+              phase === 0 && variants.length === 0 && "hidden lg:grid",
+            )}
+          >
+            {variants.length > 0 && generatorMode === "mock"
               ? variants.map((variant) => (
                   <button
                     className={cx(
@@ -666,18 +1031,37 @@ export function WimmelbuchGenerator() {
                       characters={characters}
                     />
                     <div className="mt-3 flex gap-1">
-                      {variant.palette.slice(0, 4).map((color) => (
-                        <span className="h-3 flex-1 border border-black/10" key={color} style={{ backgroundColor: color }} />
-                      ))}
+                      {variant.generatedImage ? (
+                        <span className="truncate text-xs font-bold text-neutral-500">
+                          {variant.model} / {variant.quality}
+                        </span>
+                      ) : (
+                        variant.palette.slice(0, 4).map((color) => (
+                          <span className="h-3 flex-1 border border-black/10" key={color} style={{ backgroundColor: color }} />
+                        ))
+                      )}
                     </div>
                   </button>
                 ))
-              : [1, 2, 3].map((item) => (
-                  <div className="border border-dashed border-black/15 bg-white/70 p-3" key={item}>
-                    <div className="mb-3 h-4 w-24 bg-neutral-200" />
-                    <ScenePreview compact label={`Version ${item}`} />
+              : variants.length > 0
+                ? (
+                  <div className="border border-black/10 bg-white p-3 shadow-sm">
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-black">Generated page</p>
+                        <p className="text-xs font-bold text-neutral-500">
+                          {selectedVariant?.model} / {selectedVariant?.quality}
+                        </p>
+                      </div>
+                      <Check className="h-4 w-4" />
+                    </div>
+                    <p className="text-sm font-semibold text-neutral-500">
+                      Review the generated page above. If it works, add it to the book; otherwise adjust the prompt
+                      settings or generate again.
+                    </p>
                   </div>
-                ))}
+                )
+              : null}
           </div>
         </section>
 

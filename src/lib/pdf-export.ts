@@ -191,7 +191,7 @@ export async function createBookPdf(project: ProjectConfig, pages: BookPage[]) {
       color: rgb(0.32, 0.32, 0.32),
     });
 
-    const sourceImage = await embedDataUrlImage(pdf, bookPage.sourceImage);
+    const sourceImage = await embedDataUrlImage(pdf, bookPage.variant.generatedImage ?? bookPage.sourceImage);
     const fit = fitRect(sourceImage.width, sourceImage.height, imageFrame.width, imageFrame.height, true);
     page.drawImage(sourceImage, {
       x: imageFrame.x + fit.x,
@@ -209,55 +209,57 @@ export async function createBookPdf(project: ProjectConfig, pages: BookPage[]) {
       opacity: 0.14,
     });
 
-    bookPage.variant.doodles.slice(0, 120).forEach((doodle) => {
-      const x = imageFrame.x + (doodle.x / 100) * imageFrame.width;
-      const y = imageFrame.y + imageFrame.height - (doodle.y / 100) * imageFrame.height;
-      const color = hexToRgb(doodle.color);
-      const radius = 2.5 + doodle.size * 2.3;
+    if (!bookPage.variant.generatedImage) {
+      bookPage.variant.doodles.slice(0, 120).forEach((doodle) => {
+        const x = imageFrame.x + (doodle.x / 100) * imageFrame.width;
+        const y = imageFrame.y + imageFrame.height - (doodle.y / 100) * imageFrame.height;
+        const color = hexToRgb(doodle.color);
+        const radius = 2.5 + doodle.size * 2.3;
 
-      if (doodle.shape === "house") {
+        if (doodle.shape === "house") {
+          page.drawRectangle({
+            x: x - radius,
+            y: y - radius,
+            width: radius * 2,
+            height: radius * 1.5,
+            color,
+            opacity: doodle.opacity,
+            rotate: degrees(doodle.rotation),
+          });
+        } else if (doodle.shape === "tree") {
+          page.drawSvgPath(`M ${x} ${y + radius} L ${x - radius} ${y - radius} L ${x + radius} ${y - radius} Z`, {
+            color,
+            opacity: doodle.opacity,
+            rotate: degrees(doodle.rotation),
+          });
+        } else {
+          page.drawCircle({ x, y, size: radius, color, opacity: doodle.opacity });
+        }
+      });
+
+      bookPage.variant.targets.forEach((target) => {
+        const character = bookPage.characters.find((item) => item.id === target.characterId);
+        const x = imageFrame.x + (target.x / 100) * imageFrame.width;
+        const y = imageFrame.y + imageFrame.height - (target.y / 100) * imageFrame.height;
+        const color = hexToRgb(character?.color ?? "#ef476f");
         page.drawRectangle({
-          x: x - radius,
-          y: y - radius,
-          width: radius * 2,
-          height: radius * 1.5,
+          x: x - 8,
+          y: y - 8,
+          width: 16,
+          height: 16,
           color,
-          opacity: doodle.opacity,
-          rotate: degrees(doodle.rotation),
+          opacity: 0.9,
+          rotate: degrees(target.rotation),
         });
-      } else if (doodle.shape === "tree") {
-        page.drawSvgPath(`M ${x} ${y + radius} L ${x - radius} ${y - radius} L ${x + radius} ${y - radius} Z`, {
-          color,
-          opacity: doodle.opacity,
-          rotate: degrees(doodle.rotation),
+        page.drawText(characterInitials(character?.name ?? ""), {
+          x: x - 5,
+          y: y - 4,
+          size: 7,
+          font: bold,
+          color: rgb(0.05, 0.05, 0.05),
         });
-      } else {
-        page.drawCircle({ x, y, size: radius, color, opacity: doodle.opacity });
-      }
-    });
-
-    bookPage.variant.targets.forEach((target) => {
-      const character = bookPage.characters.find((item) => item.id === target.characterId);
-      const x = imageFrame.x + (target.x / 100) * imageFrame.width;
-      const y = imageFrame.y + imageFrame.height - (target.y / 100) * imageFrame.height;
-      const color = hexToRgb(character?.color ?? "#ef476f");
-      page.drawRectangle({
-        x: x - 8,
-        y: y - 8,
-        width: 16,
-        height: 16,
-        color,
-        opacity: 0.9,
-        rotate: degrees(target.rotation),
       });
-      page.drawText(characterInitials(character?.name ?? ""), {
-        x: x - 5,
-        y: y - 4,
-        size: 7,
-        font: bold,
-        color: rgb(0.05, 0.05, 0.05),
-      });
-    });
+    }
 
     page.drawRectangle({
       x: margin,

@@ -1,12 +1,16 @@
 "use client";
 
-import type { BookPage, GeneratedVariant, HiddenCharacter } from "@/lib/wimmelbuch";
+import type { MouseEvent } from "react";
+import type { BookPage, CharacterPlacement, GeneratedVariant, HiddenCharacter } from "@/lib/wimmelbuch";
 import { characterInitials } from "@/lib/wimmelbuch";
 
 type ScenePreviewProps = {
   image?: string;
   variant?: GeneratedVariant;
   characters?: HiddenCharacter[];
+  placements?: Record<string, CharacterPlacement>;
+  activePlacementCharacterId?: string | null;
+  onPickPlacement?: (x: number, y: number) => void;
   compact?: boolean;
   revealTargets?: boolean;
   label?: string;
@@ -121,21 +125,43 @@ export function ScenePreview({
   image,
   variant,
   characters = [],
+  placements = {},
+  activePlacementCharacterId,
+  onPickPlacement,
   compact = false,
   revealTargets = false,
   label,
 }: ScenePreviewProps) {
   const overlayOpacity = variant ? Math.max(0.24, 0.86 - variant.sourceFidelity * 0.055) : 0;
   const aspectClass = compact ? "aspect-[4/3]" : "aspect-[16/10]";
+  const displayImage = variant?.generatedImage ?? image;
+  const isGeneratedImage = Boolean(variant?.generatedImage);
+  const canPickPlacement = Boolean(onPickPlacement && displayImage && !isGeneratedImage);
+
+  function handlePlacementClick(event: MouseEvent<HTMLDivElement>) {
+    if (!onPickPlacement || !canPickPlacement) {
+      return;
+    }
+
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = ((event.clientX - rect.left) / rect.width) * 100;
+    const y = ((event.clientY - rect.top) / rect.height) * 100;
+    onPickPlacement(Math.min(Math.max(x, 0), 100), Math.min(Math.max(y, 0), 100));
+  }
 
   return (
-    <div className={`relative overflow-hidden border border-black/10 bg-[#f8f7f2] shadow-sm ${aspectClass}`}>
-      {image ? (
+    <div
+      className={`relative overflow-hidden border border-black/10 bg-[#f8f7f2] shadow-sm ${aspectClass} ${
+        canPickPlacement ? "cursor-crosshair" : ""
+      }`}
+      onClick={handlePlacementClick}
+    >
+      {displayImage ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img
           alt={label ?? "Wimmelbuch source"}
           className="absolute inset-0 h-full w-full object-cover"
-          src={image}
+          src={displayImage}
         />
       ) : (
         <div className="absolute inset-0 grid grid-cols-10 gap-px bg-white/60">
@@ -145,7 +171,7 @@ export function ScenePreview({
         </div>
       )}
 
-      {variant ? (
+      {variant && !isGeneratedImage ? (
         <>
           <div
             className="absolute inset-0 mix-blend-screen"
@@ -200,6 +226,30 @@ export function ScenePreview({
           })}
         </>
       ) : null}
+
+      {!isGeneratedImage
+        ? characters.map((character) => {
+            const placement = placements[character.id];
+
+            return placement?.mode === "manual" ? (
+              <div
+                className={`absolute flex h-7 w-7 items-center justify-center border text-[10px] font-black text-black shadow-sm ${
+                  activePlacementCharacterId === character.id ? "border-black ring-2 ring-black" : "border-black/25"
+                }`}
+                key={`placement-${character.id}`}
+                style={{
+                  backgroundColor: character.color,
+                  left: `${placement.x}%`,
+                  top: `${placement.y}%`,
+                  transform: "translate(-50%, -50%)",
+                }}
+                title={`${character.name} placement`}
+              >
+                {characterInitials(character.name)}
+              </div>
+            ) : null;
+          })
+        : null}
 
       <div className="absolute inset-x-0 bottom-0 flex items-center justify-between bg-gradient-to-t from-black/70 to-transparent px-3 pb-3 pt-9 text-xs font-semibold text-white">
         <span>{label ?? "Page preview"}</span>

@@ -17,6 +17,16 @@ export type HiddenCharacter = {
   referenceImage?: string;
 };
 
+export type CharacterPlacement =
+  | {
+      mode: "random";
+    }
+  | {
+      mode: "manual";
+      x: number;
+      y: number;
+    };
+
 export type SourcePage = {
   pageNumber: number;
   sourceName: string;
@@ -63,6 +73,10 @@ export type GeneratedVariant = {
   additions: string;
   targets: TargetPlacement[];
   doodles: Doodle[];
+  generatedImage?: string;
+  generationPrompt?: string;
+  model?: string;
+  quality?: "low" | "medium" | "high";
 };
 
 export type BookPage = SourcePage & {
@@ -159,6 +173,7 @@ export function createWimmelbuchVariants(
   project: ProjectConfig,
   source: SourcePage,
   characters: HiddenCharacter[],
+  placements: Record<string, CharacterPlacement> = {},
 ) {
   const complexity = clamp(project.complexity, 1, 10);
   const fidelity = clamp(project.sourceFidelity, 1, 10);
@@ -188,7 +203,11 @@ export function createWimmelbuchVariants(
     ];
 
     const targets = activeCharacters.map((character, index) => {
-      const zone = targetZones[(index + variantIndex) % targetZones.length];
+      const placement = placements[character.id];
+      const zone =
+        placement?.mode === "manual"
+          ? { x: placement.x, y: placement.y }
+          : targetZones[(index + variantIndex) % targetZones.length];
       return {
         characterId: character.id,
         x: clamp(zone.x + (rng() - 0.5) * 18, 8, 92),

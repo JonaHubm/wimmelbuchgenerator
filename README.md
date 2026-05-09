@@ -5,6 +5,12 @@ A full-stack Next.js application for creating personalized hidden-object picture
 Live app:
 
 ```text
+Vercel production deployment
+```
+
+Static demo fallback:
+
+```text
 https://jonahubm.github.io/wimmelbuchgenerator/
 ```
 
@@ -13,11 +19,12 @@ https://jonahubm.github.io/wimmelbuchgenerator/
 - Configure a book title, creator, page count, format, visual style, source fidelity, and scene complexity.
 - Upload a source image for each page.
 - Define up to five hidden characters with clues, colors, and optional reference images.
-- Generate three selectable Wimmelbuch-style variants per page directly in the browser.
+- Generate local mock variants in the browser, or guarded live AI variants through Vercel API routes.
 - Add selected pages into a sequential book queue.
 - Export the current book as a PDF in the browser.
+- Protect test deployments with a shared access code, a server-side AI kill switch, and a browser-session usage cap.
 
-The first iteration uses a deterministic local generation engine so the app is testable without API keys and can be hosted on GitHub Pages.
+The mock generator remains available without API keys. Real AI generation requires Vercel environment variables and must not be hosted through GitHub Pages.
 
 ## Tech Stack
 
@@ -26,7 +33,7 @@ The first iteration uses a deterministic local generation engine so the app is t
 - TypeScript
 - Tailwind CSS 4
 - Zod for API validation
-- pdf-lib for server-side PDF export
+- pdf-lib for browser-side PDF export
 - Lucide React for interface icons
 
 ## Getting Started
@@ -37,6 +44,16 @@ npm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000).
+
+For local live AI testing, copy `.env.example` to `.env.local` and set:
+
+```text
+OPENAI_API_KEY=...
+WIMMELBUCH_AI_ENABLED=true
+WIMMELBUCH_AI_SESSION_LIMIT=3
+```
+
+Set `WIMMELBUCH_ACCESS_CODE` and `WIMMELBUCH_ACCESS_SECRET` locally only if you also want to test the private access gate.
 
 ## Scripts
 
@@ -51,26 +68,47 @@ npm run start   # production server
 
 ```text
 src/app/page.tsx                  Main app entry
+src/app/access/page.tsx           Private test access screen
+src/app/api/access/route.ts       Access-code cookie route
+src/app/api/ai-status/route.ts    Live AI control status route
+src/app/api/generate-page/route.ts
+src/app/api/generate-character/route.ts
+src/proxy.ts                      Next.js 16 request gate
 src/components/wimmelbuch-generator.tsx
 src/components/scene-preview.tsx
+src/lib/access-control.ts
 src/lib/wimmelbuch.ts
 src/lib/pdf-export.ts
+Requirements/WIMMELBUCH_RESEARCH_CONTEXT.md
 ```
+
+## Product Research
+
+The latest product and market research from `Requirements/Wimmelbuch_App.pptx` is summarized in [Requirements/WIMMELBUCH_RESEARCH_CONTEXT.md](./Requirements/WIMMELBUCH_RESEARCH_CONTEXT.md). Read it before changing the product model, legal consent flow, print/export workflow, or roadmap.
 
 ## Deployment
 
-The app is configured for GitHub Pages:
+Real AI testing is Vercel-first because it needs API routes and server-side secrets.
 
-1. Push to `main`.
-2. In GitHub, open **Settings -> Pages**.
-3. Set **Build and deployment** to **GitHub Actions**.
-4. The workflow publishes the static export to:
+In Vercel Project Settings -> Environment Variables, add these Production variables:
+
+```text
+OPENAI_API_KEY=<your key>
+WIMMELBUCH_ACCESS_CODE=<shared tester passcode>
+WIMMELBUCH_ACCESS_SECRET=<long random secret>
+WIMMELBUCH_AI_ENABLED=false
+WIMMELBUCH_AI_SESSION_LIMIT=3
+```
+
+Use `WIMMELBUCH_AI_ENABLED=false` to disconnect paid OpenAI calls without deleting the key. Change it to `true` and redeploy when you want selected testers to use live AI.
+
+GitHub Pages is only suitable for the earlier static/demo build and is no longer auto-deployed on every push. The existing URL may continue to show an older mock-only build:
 
 ```text
 https://jonahubm.github.io/wimmelbuchgenerator/
 ```
 
-For a future production version with real image-generation APIs, use Vercel or another backend-capable host.
+Do not use GitHub Pages for protected live AI testing.
 
 ## Next Milestones
 
