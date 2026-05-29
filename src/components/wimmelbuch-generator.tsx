@@ -30,20 +30,31 @@ import {
   GeneratedVariant,
   HiddenCharacter,
   ProjectConfig,
+  SearchTargetKind,
   SourcePage,
   characterInitials,
   createWimmelbuchVariants,
   defaultProject,
   formatLabels,
   styleLabels,
+  targetKindLabels,
   uid,
 } from "@/lib/wimmelbuch";
 
 const characterColors = ["#ef476f", "#118ab2", "#06d6a0", "#ffd166", "#f77f00"];
+const SOURCE_IMAGE_COMPRESSION = { maxEdge: 1280, quality: 0.76 };
+const REFERENCE_IMAGE_COMPRESSION = { maxEdge: 720, quality: 0.72 };
+const REVISION_IMAGE_COMPRESSION = { maxEdge: 1280, quality: 0.76 };
+const OPENAI_VARIANT_COUNT = 3;
+const MAX_GENERATION_PAYLOAD_BYTES = 3_800_000;
 
 type GenerationStatus = "idle" | "loading" | "ready" | "error";
 type GeneratorMode = "openai" | "mock";
 type GenerationQuality = "low" | "medium" | "high";
+type ImageCompressionOptions = {
+  maxEdge: number;
+  quality: number;
+};
 
 function cx(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(" ");
@@ -58,19 +69,13 @@ function readFileAsDataUrl(file: File) {
   });
 }
 
-async function compressImage(file: File) {
-  const raw = await readFileAsDataUrl(file);
-
-  if (!file.type.startsWith("image/")) {
-    return raw;
-  }
-
+async function compressDataUrl(dataUrl: string, options: ImageCompressionOptions) {
   const image = new Image();
   image.decoding = "async";
-  image.src = raw;
+  image.src = dataUrl;
   await image.decode();
 
-  const maxEdge = 1500;
+  const maxEdge = options.maxEdge;
   const ratio = Math.min(1, maxEdge / Math.max(image.width, image.height));
   const width = Math.max(1, Math.round(image.width * ratio));
   const height = Math.max(1, Math.round(image.height * ratio));
@@ -80,11 +85,66 @@ async function compressImage(file: File) {
   const context = canvas.getContext("2d");
 
   if (!context) {
+    return dataUrl;
+  }
+
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, width, height);
+  context.drawImage(image, 0, 0, width, height);
+  return canvas.toDataURL("image/jpeg", options.quality);
+}
+
+async function compressImage(file: File, options: ImageCompressionOptions) {
+  const raw = await readFileAsDataUrl(file);
+
+  if (!file.type.startsWith("image/")) {
     return raw;
   }
 
-  context.drawImage(image, 0, 0, width, height);
-  return canvas.toDataURL("image/jpeg", 0.82);
+  return compressDataUrl(raw, options);
+}
+
+function jsonPayloadBytes(value: unknown) {
+  return new Blob([JSON.stringify(value)]).size;
+}
+
+function formatBytes(bytes: number) {
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function nonJsonErrorMessage(response: Response, body: string, fallback: string) {
+  if (response.status === 401) {
+    return "Private access expired or is missing. Open /access again and enter the passcode.";
+  }
+
+  if (response.status === 413) {
+    return "The image request is too large for Vercel. Use fewer/lower-resolution references or re-upload smaller images.";
+  }
+
+  if (response.status === 504) {
+    return "The generation timed out on Vercel. Try low quality or fewer references.";
+  }
+
+  if (body.trim().startsWith("<!DOCTYPE")) {
+    return `${fallback} The server returned an HTML error page instead of JSON. This usually means the request was too large, timed out, or hit a deployment/auth error.`;
+  }
+
+  return `${fallback} Server returned ${response.status} ${response.statusText || "without JSON details"}.`;
+}
+
+async function readApiResponse<T>(response: Response, fallback: string) {
+  const contentType = response.headers.get("content-type") ?? "";
+  const body = await response.text();
+
+  if (!contentType.includes("application/json")) {
+    throw new Error(nonJsonErrorMessage(response, body, fallback));
+  }
+
+  try {
+    return JSON.parse(body) as T;
+  } catch {
+    throw new Error(`${fallback} The server returned invalid JSON.`);
+  }
 }
 
 function FieldLabel({ children }: { children: React.ReactNode }) {
@@ -165,15 +225,19 @@ export function WimmelbuchGenerator({ initialAiStatus }: { initialAiStatus: Publ
   const [characters, setCharacters] = useState<HiddenCharacter[]>([
     {
       id: uid("character"),
+      kind: "person",
       name: "Walter",
       clue: "striped scarf near a busy corner",
       color: characterColors[0],
+      scaleHint: "person-sized",
     },
     {
       id: uid("character"),
-      name: "Mila",
+      kind: "object",
+      name: "Yellow bag",
       clue: "yellow bag beside a tiny shop",
       color: characterColors[1],
+      scaleHint: "handheld bag-sized object",
     },
   ]);
   const [source, setSource] = useState<SourcePage | null>(null);
@@ -191,6 +255,8 @@ export function WimmelbuchGenerator({ initialAiStatus }: { initialAiStatus: Publ
   const [pagePlacements, setPagePlacements] = useState<Record<string, CharacterPlacement>>({});
   const [characterStatus, setCharacterStatus] = useState<Record<string, GenerationStatus>>({});
   const [aiStatus, setAiStatus] = useState<PublicAiStatus>(initialAiStatus);
+  const [revisionPrompt, setRevisionPrompt] = useState("");
+  const [coverVariantId, setCoverVariantId] = useState<string | null>(null);
 
   const selectedVariant = variants.find((variant) => variant.id === selectedVariantId) ?? variants[0];
   const pageNumber = bookPages.length + 1;
@@ -210,7 +276,10 @@ export function WimmelbuchGenerator({ initialAiStatus }: { initialAiStatus: Publ
   const roster = useMemo(
     () =>
       characters
-        .map((character) => `${character.name}${character.clue ? `: ${character.clue}` : ""}`)
+        .map((character) => {
+          const kind = targetKindLabels[character.kind ?? "person"];
+          return `${character.name} (${kind})${character.clue ? `: ${character.clue}` : ""}`;
+        })
         .join(" / "),
     [characters],
   );
@@ -227,7 +296,7 @@ export function WimmelbuchGenerator({ initialAiStatus }: { initialAiStatus: Publ
       return;
     }
 
-    const sourceImage = await compressImage(file);
+    const sourceImage = await compressImage(file, SOURCE_IMAGE_COMPRESSION);
     setSource({
       pageNumber,
       sourceName: file.name,
@@ -237,6 +306,7 @@ export function WimmelbuchGenerator({ initialAiStatus }: { initialAiStatus: Publ
     setSelectedVariantId(null);
     setPagePlacements({});
     setSelectedPlacementCharacterId(null);
+    setRevisionPrompt("");
     setStatus("idle");
     setError("");
     setPhase(1);
@@ -250,7 +320,7 @@ export function WimmelbuchGenerator({ initialAiStatus }: { initialAiStatus: Publ
       return;
     }
 
-    const image = await compressImage(file);
+    const image = await compressImage(file, REFERENCE_IMAGE_COMPRESSION);
     setCharacters((current) =>
       current.map((character) =>
         character.id === characterId ? { ...character, referenceImage: image } : character,
@@ -284,14 +354,19 @@ export function WimmelbuchGenerator({ initialAiStatus }: { initialAiStatus: Publ
           project,
           character: {
             id: character.id,
+            kind: character.kind ?? "person",
             name: character.name,
             clue: character.clue,
             color: character.color,
+            scaleHint: character.scaleHint,
           },
           quality: generationQuality,
         }),
       });
-      const payload = await response.json();
+      const payload = await readApiResponse<Partial<GenerateCharacterResponse> & {
+        ai?: PublicAiStatus;
+        error?: string;
+      }>(response, "OpenAI target reference generation failed.");
 
       if (!response.ok) {
         if (payload?.ai) {
@@ -301,7 +376,7 @@ export function WimmelbuchGenerator({ initialAiStatus }: { initialAiStatus: Publ
         throw new Error(
           typeof payload?.error === "string"
             ? payload.error
-            : "OpenAI character generation failed. Upload a reference image instead.",
+            : "OpenAI target reference generation failed. Upload a reference image instead.",
         );
       }
 
@@ -311,21 +386,33 @@ export function WimmelbuchGenerator({ initialAiStatus }: { initialAiStatus: Publ
         setAiStatus(characterPayload.ai);
       }
 
+      const referenceImage = await compressDataUrl(characterPayload.image, REFERENCE_IMAGE_COMPRESSION);
+
       setCharacters((current) =>
         current.map((item) =>
           item.id === character.id
-            ? { ...item, referenceImage: characterPayload.image }
+            ? { ...item, referenceImage }
             : item,
         ),
       );
       setCharacterStatus((current) => ({ ...current, [character.id]: "ready" }));
     } catch (characterError) {
-      setError(characterError instanceof Error ? characterError.message : "Character generation failed");
+      setError(characterError instanceof Error ? characterError.message : "Target reference generation failed");
       setCharacterStatus((current) => ({ ...current, [character.id]: "error" }));
     }
   }
 
-  async function generateVariants() {
+  async function requestPageVariants({
+    baseGeneratedImage,
+    nextRevisionPrompt,
+    iteration = 0,
+    parentVariantId,
+  }: {
+    baseGeneratedImage?: string;
+    nextRevisionPrompt?: string;
+    iteration?: number;
+    parentVariantId?: string;
+  } = {}) {
     if (!source || isBookComplete) {
       return;
     }
@@ -349,22 +436,43 @@ export function WimmelbuchGenerator({ initialAiStatus }: { initialAiStatus: Publ
       let nextVariants: GeneratedVariant[];
 
       if (generatorMode === "openai") {
+        if (aiStatus.sessionRemaining < OPENAI_VARIANT_COUNT) {
+          throw new Error(
+            `Generating ${OPENAI_VARIANT_COUNT} variants requires ${OPENAI_VARIANT_COUNT} live generations. This browser has ${aiStatus.sessionRemaining} remaining.`,
+          );
+        }
+
+        const requestPayload = {
+          project,
+          source,
+          characters,
+          placements: pagePlacements,
+          quality: generationQuality,
+          variantCount: OPENAI_VARIANT_COUNT,
+          baseGeneratedImage,
+          revisionPrompt: nextRevisionPrompt,
+          iteration,
+          rightsConfirmed,
+        };
+        const requestBytes = jsonPayloadBytes(requestPayload);
+
+        if (requestBytes > MAX_GENERATION_PAYLOAD_BYTES) {
+          throw new Error(
+            `This generation request is ${formatBytes(requestBytes)}, which is too large for reliable Vercel execution. Re-upload smaller reference images, remove one reference, or use Mock mode.`,
+          );
+        }
+
         const response = await fetch("/api/generate-page", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({
-            project,
-            source,
-            characters,
-            placements: pagePlacements,
-            quality: generationQuality,
-            variantCount: 1,
-            rightsConfirmed,
-          }),
+          body: JSON.stringify(requestPayload),
         });
-        const payload = await response.json();
+        const payload = await readApiResponse<Partial<GeneratePageResponse> & {
+          ai?: PublicAiStatus;
+          error?: string;
+        }>(response, "OpenAI page generation failed.");
 
         if (!response.ok) {
           if (payload?.ai) {
@@ -393,21 +501,78 @@ export function WimmelbuchGenerator({ initialAiStatus }: { initialAiStatus: Publ
             quality: variant.quality,
             model: variant.model,
             index,
+            parentVariantId,
+            revisionPrompt: nextRevisionPrompt,
+            iteration,
           }),
         );
       } else {
         await new Promise((resolve) => window.requestAnimationFrame(resolve));
-        nextVariants = createWimmelbuchVariants(project, source, characters, pagePlacements);
+        nextVariants = createWimmelbuchVariants(project, source, characters, pagePlacements).map((variant, index) =>
+          nextRevisionPrompt
+            ? {
+                ...variant,
+                id: uid(`mock-revision-${source.pageNumber}`),
+                name: `Revision ${iteration}.${index + 1}`,
+                parentVariantId,
+                revisionPrompt: nextRevisionPrompt,
+                iteration,
+              }
+            : variant,
+        );
       }
 
       setVariants(nextVariants);
       setSelectedVariantId(nextVariants[0]?.id ?? null);
+      setRevisionPrompt("");
       setStatus("ready");
       setPhase(1);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Generation failed");
       setStatus("error");
     }
+  }
+
+  async function generateVariants() {
+    await requestPageVariants();
+  }
+
+  async function reviseSelectedVariant() {
+    if (!source || !selectedVariant) {
+      return;
+    }
+
+    const nextRevisionPrompt = revisionPrompt.trim();
+
+    if (!nextRevisionPrompt) {
+      setError("Add a short revision instruction before revising the selected version.");
+      return;
+    }
+
+    const iteration = (selectedVariant.iteration ?? 0) + 1;
+
+    if (iteration > 2) {
+      setError("This MVP allows up to 2 revision rounds per page.");
+      return;
+    }
+
+    let baseGeneratedImage = selectedVariant.generatedImage;
+
+    if (generatorMode === "openai") {
+      if (!baseGeneratedImage) {
+        setError("Select a generated OpenAI version before revising.");
+        return;
+      }
+
+      baseGeneratedImage = await compressDataUrl(baseGeneratedImage, REVISION_IMAGE_COMPRESSION);
+    }
+
+    await requestPageVariants({
+      baseGeneratedImage,
+      nextRevisionPrompt,
+      iteration,
+      parentVariantId: selectedVariant.id,
+    });
   }
 
   function addPageToBook() {
@@ -423,11 +588,13 @@ export function WimmelbuchGenerator({ initialAiStatus }: { initialAiStatus: Publ
         characters,
       },
     ]);
+    setCoverVariantId((current) => current ?? selectedVariant.id);
     setSource(null);
     setVariants([]);
     setSelectedVariantId(null);
     setPagePlacements({});
     setSelectedPlacementCharacterId(null);
+    setRevisionPrompt("");
     setStatus("idle");
     setPhase(2);
   }
@@ -441,7 +608,7 @@ export function WimmelbuchGenerator({ initialAiStatus }: { initialAiStatus: Publ
     setError("");
 
     try {
-      const bytes = await createBookPdf(project, bookPages);
+      const bytes = await createBookPdf(project, bookPages, { coverVariantId });
       const pdfBuffer = new ArrayBuffer(bytes.byteLength);
       new Uint8Array(pdfBuffer).set(bytes);
       const blob = new Blob([pdfBuffer], { type: "application/pdf" });
@@ -467,9 +634,11 @@ export function WimmelbuchGenerator({ initialAiStatus }: { initialAiStatus: Publ
       ...current,
       {
         id: uid("character"),
-        name: `Character ${current.length + 1}`,
-        clue: "hidden in the crowd",
+        kind: "object",
+        name: `Search target ${current.length + 1}`,
+        clue: "hidden in the scene",
         color: characterColors[current.length % characterColors.length],
+        scaleHint: "",
       },
     ]);
   }
@@ -501,6 +670,7 @@ export function WimmelbuchGenerator({ initialAiStatus }: { initialAiStatus: Publ
     setSelectedVariantId(null);
     setPagePlacements({});
     setSelectedPlacementCharacterId(null);
+    setRevisionPrompt("");
     setStatus("idle");
     setError("");
     setPhase(0);
@@ -707,10 +877,10 @@ export function WimmelbuchGenerator({ initialAiStatus }: { initialAiStatus: Publ
           <section className={cx("border border-black/10 bg-white p-4 shadow-sm", phase !== 0 && "hidden lg:block")}>
             <div className="mb-4 flex items-center justify-between">
               <div>
-                <h2 className="text-lg font-black">Character sheet</h2>
-                <p className="text-xs font-bold text-neutral-500">Define each recurring figure once.</p>
+                <h2 className="text-lg font-black">Search targets</h2>
+                <p className="text-xs font-bold text-neutral-500">Define each recurring person, animal, or item once.</p>
               </div>
-              <IconButton disabled={characters.length >= 5} onClick={addCharacter} title="Add character">
+              <IconButton disabled={characters.length >= 5} onClick={addCharacter} title="Add search target">
                 <Plus className="h-4 w-4" />
               </IconButton>
             </div>
@@ -749,11 +919,50 @@ export function WimmelbuchGenerator({ initialAiStatus }: { initialAiStatus: Publ
                       onClick={() =>
                         setCharacters((current) => current.filter((item) => item.id !== character.id))
                       }
-                      title="Remove character"
+                      title="Remove search target"
                       type="button"
                     >
                       <Trash2 className="h-4 w-4" />
                     </button>
+                  </div>
+                  <div className="mb-3 grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <FieldLabel>Type</FieldLabel>
+                      <select
+                        className="h-9 w-full border border-black/10 bg-white px-2 text-xs font-bold outline-none transition focus:border-black/20"
+                        onChange={(event) =>
+                          setCharacters((current) =>
+                            current.map((item) =>
+                              item.id === character.id
+                                ? { ...item, kind: event.target.value as SearchTargetKind }
+                                : item,
+                            ),
+                          )
+                        }
+                        value={character.kind ?? "person"}
+                      >
+                        {Object.entries(targetKindLabels).map(([value, label]) => (
+                          <option key={value} value={value}>
+                            {label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="space-y-1">
+                      <FieldLabel>Scale hint</FieldLabel>
+                      <input
+                        className="h-9 w-full border border-black/10 bg-white px-2 text-xs font-bold outline-none transition focus:border-black/20"
+                        onChange={(event) =>
+                          setCharacters((current) =>
+                            current.map((item) =>
+                              item.id === character.id ? { ...item, scaleHint: event.target.value } : item,
+                            ),
+                          )
+                        }
+                        placeholder="hand-sized, car-sized..."
+                        value={character.scaleHint ?? ""}
+                      />
+                    </div>
                   </div>
                   <textarea
                     className="mb-3 min-h-16 w-full resize-none border border-black/10 bg-white p-2 text-sm outline-none transition focus:border-black/20"
@@ -810,7 +1019,7 @@ export function WimmelbuchGenerator({ initialAiStatus }: { initialAiStatus: Publ
                       <p className="text-xs font-semibold text-neutral-500">
                         {character.referenceImage
                           ? "This reference is reused on every page for consistency."
-                          : "Upload or generate a stable reference before making many pages."}
+                          : "Upload or generate a stable target reference before making many pages."}
                       </p>
                     </div>
                   </div>
@@ -854,7 +1063,7 @@ export function WimmelbuchGenerator({ initialAiStatus }: { initialAiStatus: Publ
                         ? "Click the source image."
                         : placement?.mode === "manual"
                           ? `Manual point for this page: ${Math.round(placement.x)}%, ${Math.round(placement.y)}%.`
-                          : "OpenAI chooses a hiding place."}
+                          : "OpenAI chooses a hiding place and plausible scale."}
                     </p>
                   </div>
                   <div className="flex items-center justify-between">
@@ -942,7 +1151,7 @@ export function WimmelbuchGenerator({ initialAiStatus }: { initialAiStatus: Publ
                 type="button"
               >
                 {status === "loading" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wand2 className="h-4 w-4" />}
-                Generate
+                Generate 3
               </button>
             </div>
           </div>
@@ -960,7 +1169,7 @@ export function WimmelbuchGenerator({ initialAiStatus }: { initialAiStatus: Publ
             />
             {source && !selectedVariant && selectedPlacementCharacterId ? (
               <p className="mt-3 border border-black/10 bg-[#fdfbf5] px-3 py-2 text-sm font-semibold text-neutral-600">
-                Click the source image to choose where this character should be hidden.
+                Click the source image to choose where this search target should be hidden.
               </p>
             ) : null}
             <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -987,10 +1196,35 @@ export function WimmelbuchGenerator({ initialAiStatus }: { initialAiStatus: Publ
                 onClick={addPageToBook}
                 type="button"
               >
-                Add page
+                Use this page
                 <ArrowRight className="h-4 w-4" />
               </button>
             </div>
+            {selectedVariant ? (
+              <div className="mt-3 grid gap-2 border border-black/10 bg-[#fdfbf5] p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <FieldLabel>Revise selected version</FieldLabel>
+                  <span className="text-xs font-bold text-neutral-500">
+                    {(selectedVariant.iteration ?? 0)}/2 revisions used
+                  </span>
+                </div>
+                <textarea
+                  className="min-h-20 w-full resize-none border border-black/10 bg-white p-3 text-sm font-medium outline-none transition focus:border-black/20"
+                  onChange={(event) => setRevisionPrompt(event.target.value)}
+                  placeholder="Example: make the football smaller, keep the church closer to the source photo, add more children near the fountain."
+                  value={revisionPrompt}
+                />
+                <button
+                  className="flex h-10 items-center justify-center gap-2 border border-black/10 bg-white px-3 text-sm font-black text-neutral-800 shadow-sm transition hover:border-black/25 hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-45"
+                  disabled={status === "loading" || (selectedVariant.iteration ?? 0) >= 2}
+                  onClick={reviseSelectedVariant}
+                  type="button"
+                >
+                  {status === "loading" ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
+                  Revise into 3 variants
+                </button>
+              </div>
+            ) : null}
           </div>
 
           {error ? (
@@ -1000,11 +1234,11 @@ export function WimmelbuchGenerator({ initialAiStatus }: { initialAiStatus: Publ
           <div
             className={cx(
               "grid gap-3",
-              generatorMode === "mock" && "md:grid-cols-3",
+              variants.length > 0 && "md:grid-cols-3",
               phase === 0 && variants.length === 0 && "hidden lg:grid",
             )}
           >
-            {variants.length > 0 && generatorMode === "mock"
+            {variants.length > 0
               ? variants.map((variant) => (
                   <button
                     className={cx(
@@ -1043,24 +1277,6 @@ export function WimmelbuchGenerator({ initialAiStatus }: { initialAiStatus: Publ
                     </div>
                   </button>
                 ))
-              : variants.length > 0
-                ? (
-                  <div className="border border-black/10 bg-white p-3 shadow-sm">
-                    <div className="mb-3 flex items-center justify-between gap-3">
-                      <div>
-                        <p className="text-sm font-black">Generated page</p>
-                        <p className="text-xs font-bold text-neutral-500">
-                          {selectedVariant?.model} / {selectedVariant?.quality}
-                        </p>
-                      </div>
-                      <Check className="h-4 w-4" />
-                    </div>
-                    <p className="text-sm font-semibold text-neutral-500">
-                      Review the generated page above. If it works, add it to the book; otherwise adjust the prompt
-                      settings or generate again.
-                    </p>
-                  </div>
-                )
               : null}
           </div>
         </section>
@@ -1099,6 +1315,18 @@ export function WimmelbuchGenerator({ initialAiStatus }: { initialAiStatus: Publ
                       <span>Page {page.pageNumber}</span>
                       <span>{page.variant.name}</span>
                     </div>
+                    <button
+                      className={cx(
+                        "mt-2 h-8 w-full border px-2 text-xs font-black transition",
+                        coverVariantId === page.variant.id
+                          ? "border-black bg-black text-white"
+                          : "border-black/10 bg-white text-neutral-700 hover:border-black/25",
+                      )}
+                      onClick={() => setCoverVariantId(page.variant.id)}
+                      type="button"
+                    >
+                      {coverVariantId === page.variant.id ? "Cover selected" : "Use as cover"}
+                    </button>
                   </div>
                 ))
               )}
@@ -1108,14 +1336,31 @@ export function WimmelbuchGenerator({ initialAiStatus }: { initialAiStatus: Publ
           <section className="grid grid-cols-2 gap-3">
             {characters.map((character) => (
               <div className="border border-black/10 bg-white p-3 shadow-sm" key={character.id}>
-                <div
-                  className="mb-3 grid h-10 w-10 place-items-center border border-black/15 text-sm font-black"
-                  style={{ backgroundColor: character.color }}
-                >
-                  {characterInitials(character.name)}
-                </div>
+                {character.referenceImage ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    alt={`${character.name} reference`}
+                    className="mb-3 h-14 w-14 border border-black/15 object-cover"
+                    src={character.referenceImage}
+                  />
+                ) : (
+                  <div
+                    className="mb-3 grid h-10 w-10 place-items-center border border-black/15 text-sm font-black"
+                    style={{ backgroundColor: character.color }}
+                  >
+                    {characterInitials(character.name)}
+                  </div>
+                )}
+                <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-neutral-500">
+                  {targetKindLabels[character.kind ?? "person"]}
+                </p>
                 <p className="truncate text-sm font-black">{character.name}</p>
                 <p className="line-clamp-2 text-xs font-semibold text-neutral-500">{character.clue}</p>
+                {character.scaleHint ? (
+                  <p className="mt-1 line-clamp-1 text-[11px] font-semibold text-neutral-400">
+                    {character.scaleHint}
+                  </p>
+                ) : null}
               </div>
             ))}
           </section>

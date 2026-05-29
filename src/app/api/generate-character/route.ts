@@ -18,6 +18,11 @@ export const runtime = "nodejs";
 
 const OPENAI_IMAGE_MODEL = "gpt-image-2";
 
+type OpenAiImagePayload = {
+  data?: Array<{ b64_json?: string }>;
+  error?: { message?: string };
+};
+
 function errorMessage(payload: unknown) {
   if (
     payload &&
@@ -31,7 +36,23 @@ function errorMessage(payload: unknown) {
     return payload.error.message;
   }
 
-  return "OpenAI character generation failed.";
+  return "OpenAI target reference generation failed.";
+}
+
+async function readOpenAiJson(response: Response): Promise<OpenAiImagePayload> {
+  const text = await response.text();
+
+  try {
+    return JSON.parse(text) as OpenAiImagePayload;
+  } catch {
+    return {
+      error: {
+        message:
+          text.trim().slice(0, 500) ||
+          `OpenAI returned ${response.status} ${response.statusText || "without JSON details"}.`,
+      },
+    };
+  }
 }
 
 export async function POST(request: NextRequest) {
@@ -90,7 +111,7 @@ export async function POST(request: NextRequest) {
       output_format: "png",
     }),
   });
-  const payload = await response.json();
+  const payload = await readOpenAiJson(response);
 
   if (!response.ok) {
     return NextResponse.json({ ai: aiStatus, error: errorMessage(payload) }, { status: response.status });

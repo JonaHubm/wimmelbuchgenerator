@@ -9,13 +9,19 @@ export type ProjectConfig = {
   additions: string;
 };
 
-export type HiddenCharacter = {
+export type SearchTargetKind = "person" | "animal" | "object" | "vehicle" | "symbol";
+
+export type SearchTarget = {
   id: string;
+  kind: SearchTargetKind;
   name: string;
   clue: string;
   color: string;
+  scaleHint?: string;
   referenceImage?: string;
 };
+
+export type HiddenCharacter = SearchTarget;
 
 export type CharacterPlacement =
   | {
@@ -77,6 +83,9 @@ export type GeneratedVariant = {
   generationPrompt?: string;
   model?: string;
   quality?: "low" | "medium" | "high";
+  parentVariantId?: string;
+  revisionPrompt?: string;
+  iteration?: number;
 };
 
 export type BookPage = SourcePage & {
@@ -106,6 +115,14 @@ export const formatLabels: Record<ProjectConfig["format"], string> = {
   landscape: "Landscape",
   square: "Square",
   portrait: "Portrait",
+};
+
+export const targetKindLabels: Record<SearchTargetKind, string> = {
+  person: "Person",
+  animal: "Animal",
+  object: "Object",
+  vehicle: "Vehicle",
+  symbol: "Symbol",
 };
 
 const palettes = [
@@ -143,6 +160,70 @@ export function uid(prefix = "id") {
 
 export function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
+}
+
+export function estimateTargetScaleHint(target: SearchTarget) {
+  if (target.scaleHint?.trim()) {
+    return target.scaleHint.trim();
+  }
+
+  const normalized = `${target.name} ${target.clue}`.toLowerCase();
+
+  if (/\b(ball|coin|key|ring|watch|phone|cup|toy|sticker|badge|flower|bottle|book|hat)\b/.test(normalized)) {
+    return "small handheld object, clearly smaller than a nearby person";
+  }
+
+  if (/\b(car|truck|bus|tractor|van|bike|bicycle|scooter|boat|train|vehicle)\b/.test(normalized)) {
+    return "vehicle-sized, scaled against nearby people and streets";
+  }
+
+  if (/\b(building|tower|church|house|castle|crane|monument|tree|statue)\b/.test(normalized)) {
+    return "large scene element, scaled against buildings and landscape";
+  }
+
+  if (target.kind === "animal") {
+    return "animal-sized, proportional to nearby people and objects";
+  }
+
+  if (target.kind === "vehicle") {
+    return "vehicle-sized, scaled against nearby people and streets";
+  }
+
+  if (target.kind === "symbol") {
+    return "small sign or emblem-sized mark, not a person-sized figure";
+  }
+
+  if (target.kind === "object") {
+    return "object-sized, realistically smaller or larger depending on the described item";
+  }
+
+  return "person-sized, proportional to nearby people in the scene";
+}
+
+export function estimateTargetPreviewScale(target: SearchTarget) {
+  const scaleHint = estimateTargetScaleHint(target).toLowerCase();
+
+  if (/\b(tiny|sticker|coin|key|ring|handheld|small)\b/.test(scaleHint)) {
+    return 0.68;
+  }
+
+  if (/\b(large|building|tower|church|house|castle|crane|monument|tree|statue)\b/.test(scaleHint)) {
+    return 1.42;
+  }
+
+  if (/\b(vehicle|car|truck|bus|tractor|van|boat|train)\b/.test(scaleHint)) {
+    return 1.18;
+  }
+
+  if (target.kind === "symbol" || target.kind === "object") {
+    return 0.82;
+  }
+
+  if (target.kind === "animal") {
+    return 0.92;
+  }
+
+  return 1;
 }
 
 export function makeSeed(...parts: Array<string | number | undefined>) {
@@ -212,7 +293,7 @@ export function createWimmelbuchVariants(
         characterId: character.id,
         x: clamp(zone.x + (rng() - 0.5) * 18, 8, 92),
         y: clamp(zone.y + (rng() - 0.5) * 16, 10, 88),
-        scale: 0.85 + rng() * 0.45,
+        scale: estimateTargetPreviewScale(character) + (rng() - 0.5) * 0.16,
         rotation: Math.round((rng() - 0.5) * 28),
       };
     });

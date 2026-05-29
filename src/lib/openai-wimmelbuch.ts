@@ -1,8 +1,20 @@
 import { z } from "zod";
 import type { PublicAiStatus } from "@/lib/access-control";
-import { HiddenCharacter, ProjectConfig, SourcePage, formatLabels, styleLabels, uid } from "@/lib/wimmelbuch";
+import {
+  HiddenCharacter,
+  ProjectConfig,
+  SearchTarget,
+  SearchTargetKind,
+  SourcePage,
+  estimateTargetScaleHint,
+  formatLabels,
+  styleLabels,
+  targetKindLabels,
+  uid,
+} from "@/lib/wimmelbuch";
 
 export const generationQualitySchema = z.enum(["low", "medium", "high"]).default("medium");
+export const searchTargetKindSchema = z.enum(["person", "animal", "object", "vehicle", "symbol"]).default("person");
 
 export const generatePageRequestSchema = z.object({
   project: z.object({
@@ -24,9 +36,11 @@ export const generatePageRequestSchema = z.object({
     .array(
       z.object({
         id: z.string().min(1),
+        kind: searchTargetKindSchema,
         name: z.string().min(1).max(80),
         clue: z.string().max(240),
         color: z.string().min(1).max(40),
+        scaleHint: z.string().max(160).optional(),
         referenceImage: z.string().startsWith("data:image/").optional(),
       }),
     )
@@ -47,6 +61,9 @@ export const generatePageRequestSchema = z.object({
     .default({}),
   quality: generationQualitySchema,
   variantCount: z.number().int().min(1).max(3).default(1),
+  baseGeneratedImage: z.string().startsWith("data:image/").optional(),
+  revisionPrompt: z.string().max(1200).optional(),
+  iteration: z.number().int().min(0).max(2).default(0),
   rightsConfirmed: z.literal(true),
 });
 
@@ -68,9 +85,11 @@ export const generateCharacterRequestSchema = z.object({
   project: generatePageRequestSchema.shape.project,
   character: z.object({
     id: z.string().min(1),
+    kind: searchTargetKindSchema,
     name: z.string().min(1).max(80),
     clue: z.string().max(240),
     color: z.string().min(1).max(40),
+    scaleHint: z.string().max(160).optional(),
   }),
   quality: generationQualitySchema,
 });
@@ -89,10 +108,43 @@ const styleDirectives: Record<ProjectConfig["style"], string> = {
   "modern-editorial":
     "modern editorial picture-book illustration, clean shapes, sophisticated color, detailed civic bustle",
   "alpine-storybook":
-    "Alpine storybook illustration, cozy Swiss town atmosphere, friendly figures, textured hand-drawn details",
+    "Alpine storybook illustration, cozy Swiss town atmosphere, friendly search targets, textured hand-drawn details",
   "soft-watercolor":
     "soft watercolor and pencil picture-book illustration, luminous colors, gentle contours, richly populated scene",
 };
+
+const referenceDirectives: Record<SearchTargetKind, string> = {
+  person:
+    "Show exactly one full-body person, front-facing or slight three-quarter view, centered on a plain light background.",
+  animal:
+    "Show exactly one standalone animal, full body, centered on a plain light background. Do not add a human handler.",
+  object:
+    "Show exactly one standalone object, centered on a plain light background. Do not anthropomorphize it, do not add arms or legs, and do not show a person holding it.",
+  vehicle:
+    "Show exactly one standalone vehicle, three-quarter view, centered on a plain light background. Do not add a driver or crowd.",
+  symbol:
+    "Show exactly one simple standalone symbol or emblem, centered on a plain light background. Do not turn it into a mascot or person.",
+};
+
+function targetKindGuard(target: Pick<SearchTarget, "kind">) {
+  if (target.kind === "person") {
+    return "This target is a person; draw it as a small human figure.";
+  }
+
+  if (target.kind === "animal") {
+    return "This target is an animal; draw it as an animal, not as a human in costume.";
+  }
+
+  if (target.kind === "vehicle") {
+    return "This target is a vehicle; draw it as a vehicle integrated into streets, paths, or scenery.";
+  }
+
+  if (target.kind === "symbol") {
+    return "This target is a symbol; draw it as a sign, emblem, sticker, flag, or small mark, not as a character.";
+  }
+
+  return "This target is an object; draw the literal object, not a person, mascot, or humanized version.";
+}
 
 export function imageSizeForFormat(format: ProjectConfig["format"]) {
   if (format === "portrait") {
@@ -111,17 +163,22 @@ export function buildCharacterReferencePrompt({
   character,
 }: {
   project: ProjectConfig;
-  character: Pick<HiddenCharacter, "name" | "clue" | "color">;
+  character: Pick<SearchTarget, "kind" | "name" | "clue" | "color" | "scaleHint">;
 }) {
+  const kind = character.kind ?? "person";
+  const scaleHint = estimateTargetScaleHint(character as SearchTarget);
+
   return [
-    `Create a clean approved character reference sheet for "${character.name}" for a premium Wimmelbuch hidden-object picture book.`,
-    `Character description: ${character.clue || "friendly recurring hidden-object character"}.`,
+    `Create a clean approved search-target reference sheet for "${character.name}" for a premium Wimmelbuch hidden-object picture book.`,
+    `Target type: ${targetKindLabels[kind]}. ${targetKindGuard({ kind })}`,
+    `Target description: ${character.clue || "recurring hidden-object target"}.`,
     `Main accent color: ${character.color}.`,
+    `Expected real-world scale: ${scaleHint}.`,
     `Visual style: ${styleLabels[project.style]} - ${styleDirectives[project.style]}.`,
-    "Show exactly one full-body character, front-facing or slight three-quarter view, centered on a plain light background.",
-    "The design must be distinctive and repeatable across many pages: clear outfit, silhouette, colors, and recognizable traits.",
+    referenceDirectives[kind],
+    "The design must be distinctive and repeatable across many pages: clear silhouette, colors, and recognizable traits.",
     "No text, labels, arrows, UI, logos, watermarks, copyrighted characters, or background scene.",
-    "Keep it child-friendly, charming, and simple enough to be hidden small inside a busy Wimmelbuch page.",
+    "Keep it child-friendly, charming, and simple enough to be hidden inside a busy Wimmelbuch page at the expected real-world scale.",
   ].join("\n");
 }
 
@@ -131,33 +188,41 @@ export function buildWimmelbuchPrompt({
   characters,
   placements,
   variantIndex,
+  baseGeneratedImage,
+  revisionPrompt,
+  iteration,
 }: {
   project: ProjectConfig;
   source: SourcePage;
   characters: HiddenCharacter[];
   placements?: Record<string, { mode: "random" } | { mode: "manual"; x: number; y: number }>;
   variantIndex: number;
+  baseGeneratedImage?: string;
+  revisionPrompt?: string;
+  iteration?: number;
 }) {
   const activeCharacters = characters.slice(0, 5);
   const roster = activeCharacters
     .map((character, index) => {
       const clue = character.clue ? ` Clue: ${character.clue}.` : "";
+      const kind = character.kind ?? "person";
+      const scaleHint = estimateTargetScaleHint(character);
       const reference =
         character.referenceImage
-          ? ` A reference image for this character is provided after the source photo. Use it only as an identity guide for costume, colors, silhouette, and facial/hair traits. Do not paste, crop, enlarge, frame, or copy the reference image as a foreground cutout. Redraw the character inside the scene.`
+          ? ` A reference image for this target is provided after the main scene image(s). Use it only as an identity guide for shape, colors, silhouette, and recognizable traits. Do not paste, crop, enlarge, frame, or copy the reference image as a foreground cutout. Redraw the target inside the scene.`
           : " No reference image is provided, so establish a distinctive, repeatable design from the description.";
       const characterPlacement = placements?.[character.id];
       const placement =
         characterPlacement?.mode === "manual"
-          ? ` For this page only, this figure MUST be hidden near the user-selected point: ${Math.round(characterPlacement.x)}% from the left and ${Math.round(characterPlacement.y)}% from the top of the image. Use that point as the main hiding zone, integrate the figure naturally at the correct perspective and scene depth, and do not move it to a different quadrant. Do not put the figure on an edge or as a large cropped foreground portrait.`
-          : " For this page, choose a natural random hiding place that differs from the other figures.";
-      return `${index + 1}. ${character.name}, accent color ${character.color}.${clue}${reference}${placement}`;
+          ? ` For this page only, this target MUST be hidden near the user-selected point: ${Math.round(characterPlacement.x)}% from the left and ${Math.round(characterPlacement.y)}% from the top of the image. Use that point as the main hiding zone, integrate the target naturally at the correct perspective and scene depth, and do not move it to a different quadrant. Do not put it on an edge or as a large cropped foreground portrait.`
+          : " For this page, choose a natural random hiding place that differs from the other targets.";
+      return `${index + 1}. ${character.name}, type ${targetKindLabels[kind]}, accent color ${character.color}. ${targetKindGuard({ kind })} Expected scale: ${scaleHint}.${clue}${reference}${placement}`;
     })
     .join("\n");
   const mandatoryChecklist = activeCharacters
     .map(
       (character, index) =>
-        `${index + 1}. ${character.name}: include exactly one small hidden version of this figure, using accent color ${character.color}.`,
+        `${index + 1}. ${character.name}: include exactly one hidden ${targetKindLabels[character.kind ?? "person"].toLowerCase()} target, using accent color ${character.color}, at plausible scale: ${estimateTargetScaleHint(character)}.`,
     )
     .join("\n");
   const density =
@@ -180,13 +245,21 @@ export function buildWimmelbuchPrompt({
         : "Keep the scene relatively calm and sparse, with fewer figures and fewer visual distractions.";
   const hidingInstruction =
     project.complexity >= 8
-      ? "Search figure difficulty: hard. Draw each recurring search figure very small, proportional to nearby people, partially occluded or camouflaged by similar colors, and integrated into busy areas. They should be findable only after careful looking, not obvious at first glance."
+      ? "Search difficulty: hard. Draw each recurring search target at plausible real-world scale, partially occluded or camouflaged by similar colors, and integrated into busy areas. They should be findable only after careful looking, not obvious at first glance."
       : project.complexity >= 5
-        ? "Search figure difficulty: medium. Draw each recurring search figure small and proportional to nearby people, blended into the crowd or setting, but still reasonably findable."
-        : "Search figure difficulty: easy. Draw each recurring search figure small but a little clearer than the crowd, while still integrated into the scene.";
+        ? "Search difficulty: medium. Draw each recurring search target at plausible real-world scale, blended into the crowd or setting, but still reasonably findable."
+        : "Search difficulty: easy. Draw each recurring search target clearly enough to find, while still integrated into the scene at plausible scale.";
+
+  const opening = baseGeneratedImage
+    ? `Revise the uploaded generated Wimmelbuch page for "${source.sourceName}" and keep it as the main base image.`
+    : `Create one polished Wimmelbuch hidden-object book page from the uploaded source photo "${source.sourceName}".`;
 
   return [
-    `Create one polished Wimmelbuch hidden-object book page from the uploaded source photo "${source.sourceName}".`,
+    opening,
+    baseGeneratedImage
+      ? "The first uploaded image is the current generated page to revise. The original source photo is provided after it only as place-reference context. Preserve the chosen composition unless the revision explicitly asks to change it."
+      : "",
+    revisionPrompt ? `User revision request for iteration ${(iteration ?? 0) + 1}: ${revisionPrompt}.` : "",
     fidelity,
     `Visual style: ${styleLabels[project.style]} - ${styleDirectives[project.style]}.`,
     `Book format: ${formatLabels[project.format]}. Page ${source.pageNumber} of "${project.title}".`,
@@ -199,15 +272,15 @@ export function buildWimmelbuchPrompt({
     "Do not add copyrighted characters, recognizable third-party mascots, protected logos, watermarks, or readable real brand text.",
     "Do not write character names anywhere in the image. No name tags, no labels, no captions, no text on clothing or hats.",
     "Avoid photorealism. The result should be a coherent illustrated Wimmelbuch page, not a collage and not a UI mockup.",
-    `Mandatory hidden figures: include all ${activeCharacters.length} listed recurring search figures in the final image. Do not omit any configured figure, even if the page is crowded.`,
-    "Place the following recurring search figures/objects naturally in the image, small, proportional to the scene, and findable only by looking. Do not make them larger than surrounding people unless perspective demands it. No labels, arrows, circles, frames, or foreground portraits:",
+    `Mandatory hidden targets: include all ${activeCharacters.length} listed recurring search targets in the final image. Do not omit any configured target, even if the page is crowded.`,
+    "Place the following recurring search targets naturally in the image, proportional to the real scene, and findable only by looking. Do not make small objects person-sized. Do not shrink large vehicles or landmarks into toy scale unless the user explicitly says they are toys. No labels, arrows, circles, frames, or foreground portraits:",
     roster,
     "Mandatory inclusion checklist for the final image:",
     mandatoryChecklist,
-    "Each checklist figure must appear in a separate hiding zone. If the scene becomes too crowded, reduce unrelated background crowd detail rather than omitting one of these required figures.",
-    "Before finalizing the image, verify that every checklist figure is present exactly once and visually distinguishable by its color, outfit, silhouette, or clue.",
-    "Character consistency is important across pages: use the same outfit, colors, proportions, and recognizable visual traits whenever a recurring figure appears.",
-    "If multiple reference images are attached, they correspond to the listed characters in order after the source photo. Treat those references as style/identity constraints only; the final page must be a single integrated scene.",
+    "Each checklist target must appear in a separate hiding zone. If the scene becomes too crowded, reduce unrelated background crowd detail rather than omitting one of these required targets.",
+    "Before finalizing the image, verify that every checklist target is present exactly once, visually distinguishable, and scaled plausibly against nearby people, vehicles, furniture, buildings, or landscape elements.",
+    "Consistency is important across pages: use the same colors, proportions, and recognizable visual traits whenever a recurring target appears.",
+    "If multiple reference images are attached, they correspond to the listed targets in order after the main scene image(s). Treat those references as style/identity constraints only; the final page must be a single integrated scene.",
     project.additions ? `Additional motifs to include: ${project.additions}.` : "",
     `Variant direction ${variantIndex + 1}: ${["balanced composition", "more humorous side stories", "richer seasonal atmosphere"][variantIndex] ?? "balanced composition"}.`,
   ]
@@ -223,6 +296,9 @@ export function createRealGeneratedVariant({
   quality,
   model,
   index,
+  parentVariantId,
+  revisionPrompt,
+  iteration = 0,
 }: {
   image: string;
   prompt: string;
@@ -231,10 +307,13 @@ export function createRealGeneratedVariant({
   quality: "low" | "medium" | "high";
   model: string;
   index: number;
+  parentVariantId?: string;
+  revisionPrompt?: string;
+  iteration?: number;
 }) {
   return {
     id: uid(`openai-page-${source.pageNumber}`),
-    name: `OpenAI version ${index + 1}`,
+    name: iteration > 0 ? `Revision ${iteration}.${index + 1}` : `OpenAI version ${index + 1}`,
     seed: Date.now() + index,
     palette: ["#ef476f", "#118ab2", "#06d6a0", "#ffd166", "#f8f7f2"],
     treatment: styleLabels[project.style],
@@ -247,5 +326,8 @@ export function createRealGeneratedVariant({
     generationPrompt: prompt,
     model,
     quality,
+    parentVariantId,
+    revisionPrompt,
+    iteration,
   };
 }

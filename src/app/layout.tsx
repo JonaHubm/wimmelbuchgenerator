@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Wimmelbuch Generator",
-  description: "Create personalized hidden-object picture books from your own places and characters.",
+  description: "Create personalized hidden-object picture books from your own places and search targets.",
 };
 
 export default function RootLayout({

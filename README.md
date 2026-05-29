@@ -1,6 +1,6 @@
 # Wimmelbuch Generator
 
-A full-stack Next.js application for creating personalized hidden-object picture books from uploaded place photos and custom characters.
+A full-stack Next.js application for creating personalized hidden-object picture books from uploaded place photos and custom search targets.
 
 Live app:
 
@@ -18,10 +18,11 @@ https://jonahubm.github.io/wimmelbuchgenerator/
 
 - Configure a book title, creator, page count, format, visual style, source fidelity, and scene complexity.
 - Upload a source image for each page.
-- Define up to five hidden characters with clues, colors, and optional reference images.
-- Generate local mock variants in the browser, or guarded live AI variants through Vercel API routes.
+- Define up to five hidden search targets with type, clue, color, scale hint, and optional reference image.
+- Generate three local mock variants in the browser, or guarded live AI variants through Vercel API routes.
+- Revise a selected generated variant up to two times before adding it to the book.
 - Add selected pages into a sequential book queue.
-- Export the current book as a PDF in the browser.
+- Export the current book as a print-oriented PDF with cover image, clean interior pages, and backcover target legend.
 - Protect test deployments with a shared access code, a server-side AI kill switch, and a browser-session usage cap.
 
 The mock generator remains available without API keys. Real AI generation requires Vercel environment variables and must not be hosted through GitHub Pages.
@@ -50,7 +51,7 @@ For local live AI testing, copy `.env.example` to `.env.local` and set:
 ```text
 OPENAI_API_KEY=...
 WIMMELBUCH_AI_ENABLED=true
-WIMMELBUCH_AI_SESSION_LIMIT=3
+WIMMELBUCH_AI_SESSION_LIMIT=20
 ```
 
 Set `WIMMELBUCH_ACCESS_CODE` and `WIMMELBUCH_ACCESS_SECRET` locally only if you also want to test the private access gate.
@@ -97,7 +98,7 @@ OPENAI_API_KEY=<your key>
 WIMMELBUCH_ACCESS_CODE=<shared tester passcode>
 WIMMELBUCH_ACCESS_SECRET=<long random secret>
 WIMMELBUCH_AI_ENABLED=false
-WIMMELBUCH_AI_SESSION_LIMIT=3
+WIMMELBUCH_AI_SESSION_LIMIT=20
 ```
 
 Use `WIMMELBUCH_AI_ENABLED=false` to disconnect paid OpenAI calls without deleting the key. Change it to `true` and redeploy when you want selected testers to use live AI.
@@ -113,7 +114,7 @@ Do not use GitHub Pages for protected live AI testing.
 ## Next Milestones
 
 - Add autosave, restore, project import, and project export.
-- Improve PDF layout for print readiness.
+- Add sponsor logo upload and print-on-demand export presets.
 - QA the public GitHub Pages URL on desktop and mobile.
 - Replace the local generator with a real image-model adapter.
 - Add authentication and shareable project links.

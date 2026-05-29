@@ -20,6 +20,11 @@ export const runtime = "nodejs";
 
 const OPENAI_IMAGE_MODEL = "gpt-image-2";
 
+type OpenAiImagePayload = {
+  data?: Array<{ b64_json?: string }>;
+  error?: { message?: string };
+};
+
 function dataUrlToBlob(dataUrl: string) {
   const bytes = Buffer.from(dataUrlBase64(dataUrl), "base64");
   return new Blob([bytes], { type: dataUrlMimeType(dataUrl) });
@@ -53,6 +58,22 @@ function errorMessage(payload: unknown) {
   return "OpenAI image generation failed.";
 }
 
+async function readOpenAiJson(response: Response): Promise<OpenAiImagePayload> {
+  const text = await response.text();
+
+  try {
+    return JSON.parse(text) as OpenAiImagePayload;
+  } catch {
+    return {
+      error: {
+        message:
+          text.trim().slice(0, 500) ||
+          `OpenAI returned ${response.status} ${response.statusText || "without JSON details"}.`,
+      },
+    };
+  }
+}
+
 export async function POST(request: NextRequest) {
   const hasAccess = await verifyAccessToken(request.cookies.get(ACCESS_COOKIE_NAME)?.value);
 
@@ -69,7 +90,17 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const { project, source, characters, placements, quality, variantCount } = parsed.data;
+  const {
+    project,
+    source,
+    characters,
+    placements,
+    quality,
+    variantCount,
+    baseGeneratedImage,
+    revisionPrompt,
+    iteration,
+  } = parsed.data;
   const sessionUsed = await readAiUsage(request.cookies.get(AI_USAGE_COOKIE_NAME)?.value);
   const aiStatus = getPublicAiStatus(sessionUsed);
 
@@ -97,7 +128,16 @@ export async function POST(request: NextRequest) {
   const variants: GeneratePageResponse["variants"] = [];
 
   for (let index = 0; index < variantCount; index += 1) {
-    const prompt = buildWimmelbuchPrompt({ project, source, characters, placements, variantIndex: index });
+    const prompt = buildWimmelbuchPrompt({
+      project,
+      source,
+      characters,
+      placements,
+      variantIndex: index,
+      baseGeneratedImage,
+      revisionPrompt,
+      iteration,
+    });
     const form = new FormData();
     const sourceMimeType = dataUrlMimeType(source.sourceImage);
 
@@ -106,11 +146,19 @@ export async function POST(request: NextRequest) {
     form.append("quality", quality);
     form.append("size", size);
     form.append("output_format", "jpeg");
-    form.append("output_compression", quality === "high" ? "92" : "84");
+    form.append("output_compression", quality === "high" ? "88" : quality === "medium" ? "82" : "76");
+    if (baseGeneratedImage) {
+      const baseMimeType = dataUrlMimeType(baseGeneratedImage);
+      form.append(
+        "image[]",
+        dataUrlToBlob(baseGeneratedImage),
+        `revision-base-${source.pageNumber}.${extensionForMimeType(baseMimeType)}`,
+      );
+    }
     form.append(
       "image[]",
       dataUrlToBlob(source.sourceImage),
-      `source-page-${source.pageNumber}.${extensionForMimeType(sourceMimeType)}`,
+      `${baseGeneratedImage ? "source-reference" : "source-page"}-${source.pageNumber}.${extensionForMimeType(sourceMimeType)}`,
     );
 
     characters.slice(0, 5).forEach((character, characterIndex) => {
@@ -133,7 +181,7 @@ export async function POST(request: NextRequest) {
       },
       body: form,
     });
-    const payload = await response.json();
+    const payload = await readOpenAiJson(response);
 
     if (!response.ok) {
       return NextResponse.json({ ai: aiStatus, error: errorMessage(payload) }, { status: response.status });
