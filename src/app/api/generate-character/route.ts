@@ -12,48 +12,13 @@ import {
   readAiUsage,
   verifyAccessToken,
 } from "@/lib/access-control";
+import { openAiErrorMessage, readOpenAiImagePayload, shouldRetryOpenAiResponse } from "@/lib/openai-errors";
 import { NextRequest, NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 
 const OPENAI_IMAGE_MODEL = "gpt-image-2";
-
-type OpenAiImagePayload = {
-  data?: Array<{ b64_json?: string }>;
-  error?: { message?: string };
-};
-
-function errorMessage(payload: unknown) {
-  if (
-    payload &&
-    typeof payload === "object" &&
-    "error" in payload &&
-    payload.error &&
-    typeof payload.error === "object" &&
-    "message" in payload.error &&
-    typeof payload.error.message === "string"
-  ) {
-    return payload.error.message;
-  }
-
-  return "OpenAI target reference generation failed.";
-}
-
-async function readOpenAiJson(response: Response): Promise<OpenAiImagePayload> {
-  const text = await response.text();
-
-  try {
-    return JSON.parse(text) as OpenAiImagePayload;
-  } catch {
-    return {
-      error: {
-        message:
-          text.trim().slice(0, 500) ||
-          `OpenAI returned ${response.status} ${response.statusText || "without JSON details"}.`,
-      },
-    };
-  }
-}
+const OPENAI_TARGET_ERROR = "OpenAI target reference generation failed.";
 
 export async function POST(request: NextRequest) {
   const hasAccess = await verifyAccessToken(request.cookies.get(ACCESS_COOKIE_NAME)?.value);
@@ -97,24 +62,37 @@ export async function POST(request: NextRequest) {
   const { project, character, quality } = parsed.data;
   const prompt = buildCharacterReferencePrompt({ project, character });
 
-  const response = await fetch("https://api.openai.com/v1/images/generations", {
+  const openAiRequest = {
+    model: OPENAI_IMAGE_MODEL,
+    prompt,
+    quality,
+    size: "1024x1024",
+    output_format: "png",
+  };
+  let response = await fetch("https://api.openai.com/v1/images/generations", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      model: OPENAI_IMAGE_MODEL,
-      prompt,
-      quality,
-      size: "1024x1024",
-      output_format: "png",
-    }),
+    body: JSON.stringify(openAiRequest),
   });
-  const payload = await readOpenAiJson(response);
+
+  if (!response.ok && shouldRetryOpenAiResponse(response)) {
+    response = await fetch("https://api.openai.com/v1/images/generations", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(openAiRequest),
+    });
+  }
+
+  const payload = await readOpenAiImagePayload(response);
 
   if (!response.ok) {
-    return NextResponse.json({ ai: aiStatus, error: errorMessage(payload) }, { status: response.status });
+    return NextResponse.json({ ai: aiStatus, error: openAiErrorMessage(payload, OPENAI_TARGET_ERROR) }, { status: response.status });
   }
 
   const imageBase64 = payload?.data?.[0]?.b64_json;

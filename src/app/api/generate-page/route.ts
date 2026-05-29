@@ -13,17 +13,14 @@ import {
   readAiUsage,
   verifyAccessToken,
 } from "@/lib/access-control";
+import { openAiErrorMessage, readOpenAiImagePayload, shouldRetryOpenAiResponse } from "@/lib/openai-errors";
 import { dataUrlBase64, dataUrlMimeType } from "@/lib/wimmelbuch";
 import { NextRequest, NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 
 const OPENAI_IMAGE_MODEL = "gpt-image-2";
-
-type OpenAiImagePayload = {
-  data?: Array<{ b64_json?: string }>;
-  error?: { message?: string };
-};
+const OPENAI_PAGE_ERROR = "OpenAI image generation failed.";
 
 function dataUrlToBlob(dataUrl: string) {
   const bytes = Buffer.from(dataUrlBase64(dataUrl), "base64");
@@ -40,38 +37,6 @@ function extensionForMimeType(mimeType: string) {
   }
 
   return "jpg";
-}
-
-function errorMessage(payload: unknown) {
-  if (
-    payload &&
-    typeof payload === "object" &&
-    "error" in payload &&
-    payload.error &&
-    typeof payload.error === "object" &&
-    "message" in payload.error &&
-    typeof payload.error.message === "string"
-  ) {
-    return payload.error.message;
-  }
-
-  return "OpenAI image generation failed.";
-}
-
-async function readOpenAiJson(response: Response): Promise<OpenAiImagePayload> {
-  const text = await response.text();
-
-  try {
-    return JSON.parse(text) as OpenAiImagePayload;
-  } catch {
-    return {
-      error: {
-        message:
-          text.trim().slice(0, 500) ||
-          `OpenAI returned ${response.status} ${response.statusText || "without JSON details"}.`,
-      },
-    };
-  }
 }
 
 export async function POST(request: NextRequest) {
@@ -174,17 +139,28 @@ export async function POST(request: NextRequest) {
       );
     });
 
-    const response = await fetch("https://api.openai.com/v1/images/edits", {
+    let response = await fetch("https://api.openai.com/v1/images/edits", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
       },
       body: form,
     });
-    const payload = await readOpenAiJson(response);
+
+    if (!response.ok && shouldRetryOpenAiResponse(response)) {
+      response = await fetch("https://api.openai.com/v1/images/edits", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: form,
+      });
+    }
+
+    const payload = await readOpenAiImagePayload(response);
 
     if (!response.ok) {
-      return NextResponse.json({ ai: aiStatus, error: errorMessage(payload) }, { status: response.status });
+      return NextResponse.json({ ai: aiStatus, error: openAiErrorMessage(payload, OPENAI_PAGE_ERROR) }, { status: response.status });
     }
 
     const imageBase64 = payload?.data?.[0]?.b64_json;
