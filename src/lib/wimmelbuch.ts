@@ -5,8 +5,11 @@ export type ProjectConfig = {
   format: "landscape" | "square" | "portrait";
   style: "classic-ink" | "modern-editorial" | "alpine-storybook" | "soft-watercolor";
   complexity: number;
+  hidingDifficulty: number;
   sourceFidelity: number;
   additions: string;
+  introText?: string;
+  backCoverText?: string;
 };
 
 export type SearchTargetKind = "person" | "animal" | "object" | "vehicle" | "symbol";
@@ -100,8 +103,13 @@ export const defaultProject: ProjectConfig = {
   format: "landscape",
   style: "classic-ink",
   complexity: 7,
+  hidingDifficulty: 8,
   sourceFidelity: 8,
   additions: "street musicians, small market stands, balloons, bicycles",
+  introText:
+    "Welcome to this personalized Wimmelbuch. Every spread is full of small stories, local details, and recurring search targets to discover together.",
+  backCoverText:
+    "Search through the scenes and find the recurring people, animals, objects, vehicles, and symbols hidden across the book.",
 };
 
 export const styleLabels: Record<ProjectConfig["style"], string> = {
@@ -255,12 +263,13 @@ export function createWimmelbuchVariants(
   source: SourcePage,
   characters: HiddenCharacter[],
   placements: Record<string, CharacterPlacement> = {},
+  variantCount = 2,
 ) {
   const complexity = clamp(project.complexity, 1, 10);
   const fidelity = clamp(project.sourceFidelity, 1, 10);
   const activeCharacters = characters.slice(0, 5);
 
-  return Array.from({ length: 3 }, (_, variantIndex) => {
+  return Array.from({ length: variantCount }, (_, variantIndex) => {
     const seed = makeSeed(
       project.title,
       project.style,

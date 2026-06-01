@@ -1,4 +1,4 @@
-import { PDFDocument, PageSizes, StandardFonts, degrees, rgb } from "pdf-lib";
+import { PDFDocument, StandardFonts, degrees, rgb } from "pdf-lib";
 import {
   BookPage,
   ProjectConfig,
@@ -8,6 +8,32 @@ import {
   dataUrlMimeType,
   targetKindLabels,
 } from "@/lib/wimmelbuch";
+
+const POINTS_PER_MM = 72 / 25.4;
+
+function mm(value: number) {
+  return value * POINTS_PER_MM;
+}
+
+const COVER_WRAP = {
+  width: mm(475),
+  height: mm(332),
+  bleed: mm(15),
+  panelWidth: mm(215),
+  panelHeight: mm(302),
+  spineWidth: mm(15),
+  safe: mm(15),
+};
+
+const BOOK_BLOCK = {
+  pageWidth: mm(216),
+  pageHeight: mm(303),
+  trimWidth: mm(210),
+  trimHeight: mm(297),
+  bleed: mm(3),
+  outerSafe: mm(10),
+  bindingSafe: mm(15),
+};
 
 function hexToRgb(hex: string) {
   const normalized = hex.replace("#", "");
@@ -93,6 +119,7 @@ function drawWrappedText({
   size,
   lineHeight,
   color,
+  maxLines = 4,
 }: {
   page: ReturnType<PDFDocument["addPage"]>;
   text: string;
@@ -103,6 +130,7 @@ function drawWrappedText({
   size: number;
   lineHeight: number;
   color: ReturnType<typeof rgb>;
+  maxLines?: number;
 }) {
   const words = text.split(/\s+/).filter(Boolean);
   const lines: string[] = [];
@@ -122,7 +150,7 @@ function drawWrappedText({
     lines.push(current);
   }
 
-  lines.slice(0, 4).forEach((line, index) => {
+  lines.slice(0, maxLines).forEach((line, index) => {
     page.drawText(line, { x, y: y - index * lineHeight, size, font, color });
   });
 }
@@ -210,20 +238,24 @@ async function drawFullBleedImage({
   pdf,
   page,
   dataUrl,
+  x = 0,
+  y = 0,
   width,
   height,
 }: {
   pdf: PDFDocument;
   page: ReturnType<PDFDocument["addPage"]>;
   dataUrl: string;
+  x?: number;
+  y?: number;
   width: number;
   height: number;
 }) {
   const image = await embedDataUrlImage(pdf, dataUrl);
   const fit = fitRect(image.width, image.height, width, height, true);
   page.drawImage(image, {
-    x: fit.x,
-    y: fit.y,
+    x: x + fit.x,
+    y: y + fit.y,
     width: fit.width,
     height: fit.height,
   });
@@ -235,19 +267,21 @@ function drawMockOverlay({
   pageWidth,
   pageHeight,
   bold,
+  xOffset = 0,
 }: {
   page: ReturnType<PDFDocument["addPage"]>;
   bookPage: BookPage;
   pageWidth: number;
   pageHeight: number;
   bold: Awaited<ReturnType<PDFDocument["embedFont"]>>;
+  xOffset?: number;
 }) {
   if (bookPage.variant.generatedImage) {
     return;
   }
 
   bookPage.variant.doodles.slice(0, 120).forEach((doodle) => {
-    const x = (doodle.x / 100) * pageWidth;
+    const x = (doodle.x / 100) * pageWidth - xOffset;
     const y = pageHeight - (doodle.y / 100) * pageHeight;
     const color = hexToRgb(doodle.color);
     const radius = 2.5 + doodle.size * 2.3;
@@ -275,7 +309,7 @@ function drawMockOverlay({
 
   bookPage.variant.targets.forEach((target) => {
     const character = bookPage.characters.find((item) => item.id === target.characterId);
-    const x = (target.x / 100) * pageWidth;
+    const x = (target.x / 100) * pageWidth - xOffset;
     const y = pageHeight - (target.y / 100) * pageHeight;
     const color = hexToRgb(character?.color ?? "#ef476f");
     page.drawRectangle({
@@ -301,13 +335,6 @@ export async function createBookPdf(project: ProjectConfig, pages: BookPage[], o
   const pdf = await PDFDocument.create();
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
-  const [a4Width, a4Height] = PageSizes.A4;
-  const [pageWidth, pageHeight] =
-    project.format === "portrait"
-      ? [a4Width, a4Height]
-      : project.format === "square"
-        ? [680, 680]
-        : [a4Height, a4Width];
 
   if (pages.length === 0) {
     return pdf.save();
@@ -320,184 +347,375 @@ export async function createBookPdf(project: ProjectConfig, pages: BookPage[], o
   const darkTitle = brightness > 0.54;
   const titleColor = darkTitle ? rgb(0.05, 0.05, 0.05) : rgb(1, 1, 1);
   const titlePanelColor = darkTitle ? rgb(1, 1, 1) : rgb(0.02, 0.02, 0.02);
+  const targets = uniqueTargets(pages);
+  const backCoverText =
+    project.backCoverText?.trim() ||
+    `${project.title} contains ${pages.length} Wimmelbuch scenes. Search for the recurring targets hidden across the book.`;
+  const introText =
+    project.introText?.trim() ||
+    `Welcome to ${project.title}. Every spread is full of local details, tiny stories, and recurring search targets.`;
 
-  const cover = pdf.addPage([pageWidth, pageHeight]);
-  await drawFullBleedImage({ pdf, page: cover, dataUrl: coverImage, width: pageWidth, height: pageHeight });
+  const cover = pdf.addPage([COVER_WRAP.width, COVER_WRAP.height]);
+  const backPanel = {
+    x: COVER_WRAP.bleed,
+    y: COVER_WRAP.bleed,
+    width: COVER_WRAP.panelWidth,
+    height: COVER_WRAP.panelHeight,
+  };
+  const spinePanel = {
+    x: backPanel.x + backPanel.width,
+    y: 0,
+    width: COVER_WRAP.spineWidth,
+    height: COVER_WRAP.height,
+  };
+  const frontPanel = {
+    x: spinePanel.x + spinePanel.width,
+    y: COVER_WRAP.bleed,
+    width: COVER_WRAP.panelWidth,
+    height: COVER_WRAP.panelHeight,
+  };
+  const frontImageArea = {
+    x: frontPanel.x,
+    y: 0,
+    width: frontPanel.width + COVER_WRAP.bleed,
+    height: COVER_WRAP.height,
+  };
+
   cover.drawRectangle({
-    x: 40,
-    y: pageHeight - 186,
-    width: pageWidth - 80,
-    height: 138,
+    x: 0,
+    y: 0,
+    width: COVER_WRAP.width,
+    height: COVER_WRAP.height,
+    color: rgb(0.96, 0.95, 0.91),
+  });
+  cover.drawRectangle({
+    x: 0,
+    y: 0,
+    width: spinePanel.x,
+    height: COVER_WRAP.height,
+    color: rgb(0.96, 0.95, 0.91),
+  });
+  await drawFullBleedImage({
+    pdf,
+    page: cover,
+    dataUrl: coverImage,
+    x: frontImageArea.x,
+    y: frontImageArea.y,
+    width: frontImageArea.width,
+    height: frontImageArea.height,
+  });
+  cover.drawRectangle({
+    x: spinePanel.x,
+    y: spinePanel.y,
+    width: spinePanel.width,
+    height: spinePanel.height,
+    color: rgb(0.72, 0.08, 0.1),
+  });
+
+  const frontSafeX = frontPanel.x + COVER_WRAP.safe;
+  const frontSafeWidth = frontPanel.width - COVER_WRAP.safe * 2;
+  const frontTitleHeight = mm(72);
+  const frontTitleY = frontPanel.y + frontPanel.height - COVER_WRAP.safe - frontTitleHeight;
+
+  cover.drawRectangle({
+    x: frontSafeX,
+    y: frontTitleY,
+    width: frontSafeWidth,
+    height: frontTitleHeight,
     color: titlePanelColor,
-    opacity: 0.58,
+    opacity: 0.62,
   });
   drawWrappedText({
     page: cover,
     text: project.title,
-    x: 58,
-    y: pageHeight - 94,
-    maxWidth: pageWidth - 116,
-    size: 42,
-    lineHeight: 44,
+    x: frontSafeX + mm(7),
+    y: frontTitleY + frontTitleHeight - mm(20),
+    maxWidth: frontSafeWidth - mm(14),
+    size: 30,
+    lineHeight: 32,
     font: bold,
     color: titleColor,
+    maxLines: 2,
   });
   cover.drawText(project.creator, {
-    x: 60,
-    y: pageHeight - 164,
-    size: 16,
+    x: frontSafeX + mm(7),
+    y: frontTitleY + mm(11),
+    size: 12,
     font: bold,
     color: titleColor,
+    maxWidth: frontSafeWidth - mm(14),
   });
 
-  for (const bookPage of pages) {
-    const page = pdf.addPage([pageWidth, pageHeight]);
-    page.drawRectangle({ x: 0, y: 0, width: pageWidth, height: pageHeight, color: rgb(0.98, 0.97, 0.94) });
-    await drawFullBleedImage({
-      pdf,
-      page,
-      dataUrl: bookPage.variant.generatedImage ?? bookPage.sourceImage,
-      width: pageWidth,
-      height: pageHeight,
-    });
-    drawMockOverlay({ page, bookPage, pageWidth, pageHeight, bold });
-  }
+  const spineTitle = project.title.slice(0, 64);
+  const spineCreator = project.creator.slice(0, 48);
+  const spineTitleSize = 12;
+  const spineCreatorSize = 7;
+  cover.drawText(spineTitle, {
+    x: spinePanel.x + spinePanel.width * 0.66,
+    y: (COVER_WRAP.height - bold.widthOfTextAtSize(spineTitle, spineTitleSize)) / 2,
+    size: spineTitleSize,
+    font: bold,
+    color: rgb(1, 1, 1),
+    rotate: degrees(90),
+  });
+  cover.drawText(spineCreator, {
+    x: spinePanel.x + spinePanel.width * 0.33,
+    y: (COVER_WRAP.height - font.widthOfTextAtSize(spineCreator, spineCreatorSize)) / 2,
+    size: spineCreatorSize,
+    font,
+    color: rgb(1, 1, 1),
+    rotate: degrees(90),
+  });
 
-  const backcover = pdf.addPage([pageWidth, pageHeight]);
-  const margin = 46;
-  const targets = uniqueTargets(pages);
-  backcover.drawRectangle({ x: 0, y: 0, width: pageWidth, height: pageHeight, color: rgb(0.96, 0.95, 0.91) });
-  backcover.drawText(project.title, {
-    x: margin,
-    y: pageHeight - 72,
-    size: 24,
+  const backSafeX = backPanel.x + COVER_WRAP.safe;
+  const backSafeTop = backPanel.y + backPanel.height - COVER_WRAP.safe;
+  const backSafeWidth = backPanel.width - COVER_WRAP.safe * 2;
+
+  cover.drawText(project.title, {
+    x: backSafeX,
+    y: backSafeTop - mm(5),
+    size: 19,
     font: bold,
     color: rgb(0.72, 0.08, 0.1),
+    maxWidth: backSafeWidth,
   });
   drawWrappedText({
-    page: backcover,
-    text: `${project.title} contains ${pages.length} Wimmelbuch scenes. Search for these recurring targets on every generated page.`,
-    x: margin,
-    y: pageHeight - 108,
-    maxWidth: pageWidth - margin * 2,
+    page: cover,
+    text: backCoverText,
+    x: backSafeX,
+    y: backSafeTop - mm(18),
+    maxWidth: backSafeWidth,
     font,
-    size: 13,
-    lineHeight: 17,
+    size: 9.5,
+    lineHeight: 12,
     color: rgb(0.12, 0.12, 0.12),
+    maxLines: 6,
   });
 
-  const cardWidth = (pageWidth - margin * 2 - 22) / 2;
-  const cardHeight = 76;
-  const firstCardY = pageHeight - 214;
-
-  for (const [index, target] of targets.entries()) {
-    const column = index % 2;
-    const row = Math.floor(index / 2);
-    const x = margin + column * (cardWidth + 22);
-    const y = firstCardY - row * (cardHeight + 14);
-
-    backcover.drawRectangle({
-      x,
+  const cardGap = mm(3);
+  const cardHeight = mm(21);
+  const legendTop = backSafeTop - mm(86);
+  for (const [index, target] of targets.slice(0, 5).entries()) {
+    const y = legendTop - index * (cardHeight + cardGap);
+    cover.drawRectangle({
+      x: backSafeX,
       y,
-      width: cardWidth,
+      width: backSafeWidth,
       height: cardHeight,
       color: rgb(1, 1, 1),
       borderColor: rgb(0.82, 0.8, 0.75),
-      borderWidth: 1,
+      borderWidth: 0.7,
     });
 
     if (target.referenceImage) {
       await drawContainedImage({
         pdf,
-        page: backcover,
+        page: cover,
         dataUrl: target.referenceImage,
-        x: x + 10,
-        y: y + 12,
-        width: 52,
-        height: 52,
+        x: backSafeX + mm(3),
+        y: y + mm(2.5),
+        width: mm(16),
+        height: mm(16),
       });
     } else {
-      backcover.drawRectangle({ x: x + 10, y: y + 12, width: 52, height: 52, color: hexToRgb(target.color) });
-      backcover.drawText(characterInitials(target.name), {
-        x: x + 24,
-        y: y + 33,
-        size: 13,
+      cover.drawRectangle({
+        x: backSafeX + mm(3),
+        y: y + mm(2.5),
+        width: mm(16),
+        height: mm(16),
+        color: hexToRgb(target.color),
+      });
+      cover.drawText(characterInitials(target.name), {
+        x: backSafeX + mm(7),
+        y: y + mm(8),
+        size: 7,
         font: bold,
         color: rgb(0.04, 0.04, 0.04),
       });
     }
 
-    backcover.drawText(targetKindLabels[target.kind ?? "person"], {
-      x: x + 74,
-      y: y + 52,
-      size: 8,
+    cover.drawText(targetKindLabels[target.kind ?? "person"], {
+      x: backSafeX + mm(23),
+      y: y + mm(13),
+      size: 5.8,
       font: bold,
       color: rgb(0.45, 0.45, 0.45),
     });
-    backcover.drawText(target.name, {
-      x: x + 74,
-      y: y + 36,
-      size: 12,
+    cover.drawText(target.name, {
+      x: backSafeX + mm(23),
+      y: y + mm(7.2),
+      size: 8.5,
       font: bold,
       color: rgb(0.05, 0.05, 0.05),
-      maxWidth: cardWidth - 84,
+      maxWidth: backSafeWidth - mm(26),
     });
     drawWrappedText({
-      page: backcover,
-      text: target.scaleHint ? `${target.clue} Scale: ${target.scaleHint}` : target.clue,
-      x: x + 74,
-      y: y + 21,
-      maxWidth: cardWidth - 84,
+      page: cover,
+      text: target.clue,
+      x: backSafeX + mm(23),
+      y: y + mm(3.3),
+      maxWidth: backSafeWidth - mm(26),
       font,
-      size: 7,
-      lineHeight: 8,
+      size: 5.4,
+      lineHeight: 6,
       color: rgb(0.32, 0.32, 0.32),
+      maxLines: 1,
     });
   }
 
-  const sponsorY = 72;
-  backcover.drawText("Sponsors & supporters", {
-    x: margin,
-    y: sponsorY + 84,
-    size: 14,
+  const sponsorY = backPanel.y + COVER_WRAP.safe;
+  cover.drawText("Sponsors & supporters", {
+    x: backSafeX,
+    y: sponsorY + mm(31),
+    size: 9,
     font: bold,
     color: rgb(0.12, 0.12, 0.12),
   });
-  backcover.drawRectangle({
-    x: margin,
+  cover.drawRectangle({
+    x: backSafeX,
     y: sponsorY,
-    width: pageWidth - margin * 2,
-    height: 68,
+    width: backSafeWidth,
+    height: mm(26),
     color: rgb(1, 1, 1),
     borderColor: rgb(0.78, 0.76, 0.7),
-    borderWidth: 1,
+    borderWidth: 0.7,
   });
   ["Logo", "Supporter", "Partner", "Thanks"].forEach((label, index) => {
-    const width = (pageWidth - margin * 2 - 42) / 4;
-    const x = margin + 10 + index * (width + 8);
-    backcover.drawRectangle({
+    const boxWidth = (backSafeWidth - mm(10.5)) / 4;
+    const x = backSafeX + mm(2.5) + index * (boxWidth + mm(2));
+    cover.drawRectangle({
       x,
-      y: sponsorY + 14,
-      width,
-      height: 40,
+      y: sponsorY + mm(5),
+      width: boxWidth,
+      height: mm(15),
       borderColor: rgb(0.82, 0.8, 0.75),
-      borderWidth: 1,
+      borderWidth: 0.6,
     });
-    backcover.drawText(label, {
-      x: x + 10,
-      y: sponsorY + 31,
-      size: 8,
+    cover.drawText(label, {
+      x: x + mm(2.5),
+      y: sponsorY + mm(11),
+      size: 5.5,
       font: bold,
       color: rgb(0.55, 0.55, 0.55),
+      maxWidth: boxWidth - mm(5),
     });
   });
-  backcover.drawText(`Created by ${project.creator}`, {
-    x: margin,
-    y: 34,
-    size: 9,
-    font,
-    color: rgb(0.35, 0.35, 0.35),
+
+  const intro = pdf.addPage([BOOK_BLOCK.pageWidth, BOOK_BLOCK.pageHeight]);
+  intro.drawRectangle({
+    x: 0,
+    y: 0,
+    width: BOOK_BLOCK.pageWidth,
+    height: BOOK_BLOCK.pageHeight,
+    color: rgb(0.98, 0.97, 0.94),
   });
+  const introX = BOOK_BLOCK.bleed + BOOK_BLOCK.bindingSafe;
+  const introTop = BOOK_BLOCK.pageHeight - BOOK_BLOCK.bleed - mm(28);
+  const introWidth = BOOK_BLOCK.trimWidth - BOOK_BLOCK.bindingSafe - BOOK_BLOCK.outerSafe;
+  intro.drawText(project.title, {
+    x: introX,
+    y: introTop,
+    size: 25,
+    font: bold,
+    color: rgb(0.72, 0.08, 0.1),
+    maxWidth: introWidth,
+  });
+  intro.drawText(project.creator, {
+    x: introX,
+    y: introTop - mm(13),
+    size: 11,
+    font: bold,
+    color: rgb(0.2, 0.2, 0.2),
+    maxWidth: introWidth,
+  });
+  drawWrappedText({
+    page: intro,
+    text: introText,
+    x: introX,
+    y: introTop - mm(34),
+    maxWidth: introWidth,
+    font,
+    size: 11,
+    lineHeight: 15,
+    color: rgb(0.12, 0.12, 0.12),
+    maxLines: 12,
+  });
+  intro.drawText("Search targets", {
+    x: introX,
+    y: mm(102),
+    size: 13,
+    font: bold,
+    color: rgb(0.12, 0.12, 0.12),
+  });
+  targets.slice(0, 5).forEach((target, index) => {
+    const x = introX + (index % 3) * mm(50);
+    const y = mm(72) - Math.floor(index / 3) * mm(30);
+    intro.drawRectangle({
+      x,
+      y,
+      width: mm(39),
+      height: mm(22),
+      color: rgb(1, 1, 1),
+      borderColor: rgb(0.82, 0.8, 0.75),
+      borderWidth: 0.6,
+    });
+    intro.drawRectangle({
+      x: x + mm(3),
+      y: y + mm(5),
+      width: mm(12),
+      height: mm(12),
+      color: hexToRgb(target.color),
+    });
+    intro.drawText(target.name, {
+      x: x + mm(18),
+      y: y + mm(12),
+      size: 6.8,
+      font: bold,
+      color: rgb(0.05, 0.05, 0.05),
+      maxWidth: mm(18),
+    });
+    intro.drawText(targetKindLabels[target.kind ?? "person"], {
+      x: x + mm(18),
+      y: y + mm(6),
+      size: 5.2,
+      font,
+      color: rgb(0.42, 0.42, 0.42),
+      maxWidth: mm(18),
+    });
+  });
+
+  const spreadWidth = BOOK_BLOCK.pageWidth * 2;
+  const spreadHeight = BOOK_BLOCK.pageHeight;
+  for (const bookPage of pages) {
+    const dataUrl = bookPage.variant.generatedImage ?? bookPage.sourceImage;
+    const image = await embedDataUrlImage(pdf, dataUrl);
+    const fit = fitRect(image.width, image.height, spreadWidth, spreadHeight, true);
+
+    for (const side of [0, 1]) {
+      const page = pdf.addPage([BOOK_BLOCK.pageWidth, BOOK_BLOCK.pageHeight]);
+      page.drawRectangle({
+        x: 0,
+        y: 0,
+        width: BOOK_BLOCK.pageWidth,
+        height: BOOK_BLOCK.pageHeight,
+        color: rgb(0.98, 0.97, 0.94),
+      });
+      page.drawImage(image, {
+        x: fit.x - side * BOOK_BLOCK.pageWidth,
+        y: fit.y,
+        width: fit.width,
+        height: fit.height,
+      });
+      drawMockOverlay({
+        page,
+        bookPage,
+        pageWidth: spreadWidth,
+        pageHeight: spreadHeight,
+        bold,
+        xOffset: side * BOOK_BLOCK.pageWidth,
+      });
+    }
+  }
 
   return pdf.save();
 }

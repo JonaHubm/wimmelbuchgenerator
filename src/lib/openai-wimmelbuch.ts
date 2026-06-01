@@ -13,7 +13,7 @@ import {
   uid,
 } from "@/lib/wimmelbuch";
 
-export const generationQualitySchema = z.enum(["low", "medium", "high"]).default("medium");
+export const generationQualitySchema = z.enum(["low", "medium", "high"]).default("low");
 export const searchTargetKindSchema = z.enum(["person", "animal", "object", "vehicle", "symbol"]).default("person");
 
 export const generatePageRequestSchema = z.object({
@@ -24,8 +24,11 @@ export const generatePageRequestSchema = z.object({
     format: z.enum(["landscape", "square", "portrait"]),
     style: z.enum(["classic-ink", "modern-editorial", "alpine-storybook", "soft-watercolor"]),
     complexity: z.number().min(1).max(10),
+    hidingDifficulty: z.number().min(1).max(10).default(8),
     sourceFidelity: z.number().min(1).max(10),
     additions: z.string().max(1200),
+    introText: z.string().max(1600).optional(),
+    backCoverText: z.string().max(1600).optional(),
   }),
   source: z.object({
     pageNumber: z.number().int().min(1).max(40),
@@ -71,6 +74,7 @@ export type GeneratePageRequest = z.infer<typeof generatePageRequestSchema>;
 
 export type GeneratePageResponse = {
   ai?: PublicAiStatus;
+  warning?: string;
   variants: Array<{
     id: string;
     name: string;
@@ -214,15 +218,15 @@ export function buildWimmelbuchPrompt({
       const characterPlacement = placements?.[character.id];
       const placement =
         characterPlacement?.mode === "manual"
-          ? ` For this page only, this target MUST be hidden near the user-selected point: ${Math.round(characterPlacement.x)}% from the left and ${Math.round(characterPlacement.y)}% from the top of the image. Use that point as the main hiding zone, integrate the target naturally at the correct perspective and scene depth, and do not move it to a different quadrant. Do not put it on an edge or as a large cropped foreground portrait.`
-          : " For this page, choose a natural random hiding place that differs from the other targets.";
+          ? ` For this page only, this target MUST be hidden near the user-selected point: ${Math.round(characterPlacement.x)}% from the left and ${Math.round(characterPlacement.y)}% from the top of the image. Use that point as the main hiding zone, but tuck the target behind, inside, between, or partly covered by existing scene elements such as flowers, people, windows, vehicles, signs, furniture, trees, or architecture. Integrate it naturally at the correct perspective and scene depth, and do not move it to a different quadrant. Do not put it on an edge, centered foreground, or as a large cropped portrait.`
+          : " For this page, choose a natural random hiding place that differs from the other targets and uses partial cover from nearby scene elements.";
       return `${index + 1}. ${character.name}, type ${targetKindLabels[kind]}, accent color ${character.color}. ${targetKindGuard({ kind })} Expected scale: ${scaleHint}.${clue}${reference}${placement}`;
     })
     .join("\n");
   const mandatoryChecklist = activeCharacters
     .map(
       (character, index) =>
-        `${index + 1}. ${character.name}: include exactly one hidden ${targetKindLabels[character.kind ?? "person"].toLowerCase()} target, using accent color ${character.color}, at plausible scale: ${estimateTargetScaleHint(character)}.`,
+        `${index + 1}. ${character.name}: include exactly one hidden ${targetKindLabels[character.kind ?? "person"].toLowerCase()} target, using accent color ${character.color}, at plausible scale: ${estimateTargetScaleHint(character)}, partially covered or camouflaged according to search difficulty.`,
     )
     .join("\n");
   const density =
@@ -231,6 +235,7 @@ export function buildWimmelbuchPrompt({
       : project.complexity >= 5
         ? "dense"
         : "moderately dense";
+  const hidingDifficulty = project.hidingDifficulty ?? 8;
   const fidelity =
       project.sourceFidelity >= 8
       ? "Preserve the uploaded place photo's architecture, perspective, recognizable landmarks, facade geometry, and spatial layout closely. The result should clearly be this same place transformed into illustration."
@@ -244,11 +249,15 @@ export function buildWimmelbuchPrompt({
         ? "Add a medium-density Wimmelbuch scene with several small groups, props, and discoverable side stories while keeping the composition readable."
         : "Keep the scene relatively calm and sparse, with fewer figures and fewer visual distractions.";
   const hidingInstruction =
-    project.complexity >= 8
-      ? "Search difficulty: hard. Draw each recurring search target at plausible real-world scale, partially occluded or camouflaged by similar colors, and integrated into busy areas. They should be findable only after careful looking, not obvious at first glance."
-      : project.complexity >= 5
-        ? "Search difficulty: medium. Draw each recurring search target at plausible real-world scale, blended into the crowd or setting, but still reasonably findable."
+    hidingDifficulty >= 8
+      ? "Search difficulty: hard. Draw each recurring search target as a small integrated scene detail at plausible real-world scale, partly hidden behind or inside other objects, camouflaged by nearby colors, and placed in visually busy areas. It should be findable only after careful looking, not obvious at first glance."
+      : hidingDifficulty >= 5
+        ? "Search difficulty: medium. Draw each recurring search target at plausible real-world scale, blended into the crowd or setting and partly overlapped by nearby details, but still reasonably findable."
         : "Search difficulty: easy. Draw each recurring search target clearly enough to find, while still integrated into the scene at plausible scale.";
+  const visibilityGuard =
+    hidingDifficulty >= 7
+      ? "Important hiding rule: no mandatory target may become the central foreground subject, the largest or brightest figure, a clean full-body front-facing hero pose, or a pasted reference cutout. For striking people or colorful outfits, keep recognizable traits such as hat, color, silhouette, or accessory visible, but hide part of the body behind scenery or crowd detail."
+      : "Keep mandatory targets integrated into the scene instead of isolated as foreground cutouts.";
 
   const opening = baseGeneratedImage
     ? `Revise the uploaded generated Wimmelbuch page for "${source.sourceName}" and keep it as the main base image.`
@@ -264,21 +273,22 @@ export function buildWimmelbuchPrompt({
     `Visual style: ${styleLabels[project.style]} - ${styleDirectives[project.style]}.`,
     `Book format: ${formatLabels[project.format]}. Page ${source.pageNumber} of "${project.title}".`,
     `Complexity setting: ${project.complexity}/10 (${density}). ${crowdInstruction}`,
+    `Search difficulty setting: ${hidingDifficulty}/10. ${hidingInstruction}`,
     `Source fidelity setting: ${project.sourceFidelity}/10. ${fidelity}`,
-    "The complexity and source fidelity settings are important generation controls; make the visual result noticeably reflect them.",
+    "The complexity, search difficulty, and source fidelity settings are important generation controls; make the visual result noticeably reflect them.",
     "Make the scene child-friendly, PEGI 3, playful, and suitable for a premium printed picture book.",
-    hidingInstruction,
+    visibilityGuard,
     "Transform the place into a lively illustrated panorama with many small narrative micro-scenes, families, pedestrians, tiny jokes, vendors, bicycles, animals, signs without legible brand names, and environmental detail.",
     "Do not add copyrighted characters, recognizable third-party mascots, protected logos, watermarks, or readable real brand text.",
     "Do not write character names anywhere in the image. No name tags, no labels, no captions, no text on clothing or hats.",
     "Avoid photorealism. The result should be a coherent illustrated Wimmelbuch page, not a collage and not a UI mockup.",
     `Mandatory hidden targets: include all ${activeCharacters.length} listed recurring search targets in the final image. Do not omit any configured target, even if the page is crowded.`,
-    "Place the following recurring search targets naturally in the image, proportional to the real scene, and findable only by looking. Do not make small objects person-sized. Do not shrink large vehicles or landmarks into toy scale unless the user explicitly says they are toys. No labels, arrows, circles, frames, or foreground portraits:",
+    "Place the following recurring search targets naturally in the image, proportional to the real scene, and findable only by looking. Do not make small objects person-sized. Do not shrink large vehicles or landmarks into toy scale unless the user explicitly says they are toys. No labels, arrows, circles, frames, foreground portraits, or obvious display poses:",
     roster,
     "Mandatory inclusion checklist for the final image:",
     mandatoryChecklist,
     "Each checklist target must appear in a separate hiding zone. If the scene becomes too crowded, reduce unrelated background crowd detail rather than omitting one of these required targets.",
-    "Before finalizing the image, verify that every checklist target is present exactly once, visually distinguishable, and scaled plausibly against nearby people, vehicles, furniture, buildings, or landscape elements.",
+    "Before finalizing the image, verify that every checklist target is present exactly once, visually distinguishable after careful search, not immediately dominant, and scaled plausibly against nearby people, vehicles, furniture, buildings, or landscape elements.",
     "Consistency is important across pages: use the same colors, proportions, and recognizable visual traits whenever a recurring target appears.",
     "If multiple reference images are attached, they correspond to the listed targets in order after the main scene image(s). Treat those references as style/identity constraints only; the final page must be a single integrated scene.",
     project.additions ? `Additional motifs to include: ${project.additions}.` : "",
