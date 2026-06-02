@@ -21,10 +21,10 @@ const COVER_WRAP = {
   safe: mm(15),
 };
 
-const BOOK_BLOCK = {
-  pageWidth: mm(216),
+const INTERIOR_SPREAD = {
+  pageWidth: mm(426),
   pageHeight: mm(303),
-  trimWidth: mm(210),
+  trimWidth: mm(420),
   trimHeight: mm(297),
   bleed: mm(3),
   outerSafe: mm(10),
@@ -262,22 +262,18 @@ function drawMockOverlay({
   bookPage,
   pageWidth,
   pageHeight,
-  bold,
-  xOffset = 0,
 }: {
   page: ReturnType<PDFDocument["addPage"]>;
   bookPage: BookPage;
   pageWidth: number;
   pageHeight: number;
-  bold: Awaited<ReturnType<PDFDocument["embedFont"]>>;
-  xOffset?: number;
 }) {
   if (bookPage.variant.generatedImage) {
     return;
   }
 
   bookPage.variant.doodles.slice(0, 120).forEach((doodle) => {
-    const x = (doodle.x / 100) * pageWidth - xOffset;
+    const x = (doodle.x / 100) * pageWidth;
     const y = pageHeight - (doodle.y / 100) * pageHeight;
     const color = hexToRgb(doodle.color);
     const radius = 2.5 + doodle.size * 2.3;
@@ -301,29 +297,6 @@ function drawMockOverlay({
     } else {
       page.drawCircle({ x, y, size: radius, color, opacity: doodle.opacity });
     }
-  });
-
-  bookPage.variant.targets.forEach((target) => {
-    const character = bookPage.characters.find((item) => item.id === target.characterId);
-    const x = (target.x / 100) * pageWidth - xOffset;
-    const y = pageHeight - (target.y / 100) * pageHeight;
-    const color = hexToRgb(character?.color ?? "#ef476f");
-    page.drawRectangle({
-      x: x - 8,
-      y: y - 8,
-      width: 16,
-      height: 16,
-      color,
-      opacity: 0.9,
-      rotate: degrees(target.rotation),
-    });
-    page.drawText(characterInitials(character?.name ?? ""), {
-      x: x - 5,
-      y: y - 4,
-      size: 7,
-      font: bold,
-      color: rgb(0.05, 0.05, 0.05),
-    });
   });
 }
 
@@ -597,17 +570,17 @@ export async function createBookPdf(project: ProjectConfig, pages: BookPage[], o
     });
   });
 
-  const intro = pdf.addPage([BOOK_BLOCK.pageWidth, BOOK_BLOCK.pageHeight]);
+  const intro = pdf.addPage([INTERIOR_SPREAD.pageWidth, INTERIOR_SPREAD.pageHeight]);
   intro.drawRectangle({
     x: 0,
     y: 0,
-    width: BOOK_BLOCK.pageWidth,
-    height: BOOK_BLOCK.pageHeight,
+    width: INTERIOR_SPREAD.pageWidth,
+    height: INTERIOR_SPREAD.pageHeight,
     color: rgb(0.98, 0.97, 0.94),
   });
-  const introX = BOOK_BLOCK.bleed + BOOK_BLOCK.bindingSafe;
-  const introTop = BOOK_BLOCK.pageHeight - BOOK_BLOCK.bleed - mm(28);
-  const introWidth = BOOK_BLOCK.trimWidth - BOOK_BLOCK.bindingSafe - BOOK_BLOCK.outerSafe;
+  const introX = INTERIOR_SPREAD.bleed + INTERIOR_SPREAD.bindingSafe;
+  const introTop = INTERIOR_SPREAD.pageHeight - INTERIOR_SPREAD.bleed - mm(28);
+  const introWidth = INTERIOR_SPREAD.trimWidth - INTERIOR_SPREAD.bindingSafe - INTERIOR_SPREAD.outerSafe;
   intro.drawText(project.title, {
     x: introX,
     y: introTop,
@@ -680,37 +653,30 @@ export async function createBookPdf(project: ProjectConfig, pages: BookPage[], o
     });
   });
 
-  const spreadWidth = BOOK_BLOCK.pageWidth * 2;
-  const spreadHeight = BOOK_BLOCK.pageHeight;
   for (const bookPage of pages) {
     const dataUrl = bookPage.variant.generatedImage ?? bookPage.sourceImage;
     const image = await embedDataUrlImage(pdf, dataUrl);
-    const fit = fitRect(image.width, image.height, spreadWidth, spreadHeight, true);
-
-    for (const side of [0, 1]) {
-      const page = pdf.addPage([BOOK_BLOCK.pageWidth, BOOK_BLOCK.pageHeight]);
-      page.drawRectangle({
-        x: 0,
-        y: 0,
-        width: BOOK_BLOCK.pageWidth,
-        height: BOOK_BLOCK.pageHeight,
-        color: rgb(0.98, 0.97, 0.94),
-      });
-      page.drawImage(image, {
-        x: fit.x - side * BOOK_BLOCK.pageWidth,
-        y: fit.y,
-        width: fit.width,
-        height: fit.height,
-      });
-      drawMockOverlay({
-        page,
-        bookPage,
-        pageWidth: spreadWidth,
-        pageHeight: spreadHeight,
-        bold,
-        xOffset: side * BOOK_BLOCK.pageWidth,
-      });
-    }
+    const fit = fitRect(image.width, image.height, INTERIOR_SPREAD.pageWidth, INTERIOR_SPREAD.pageHeight, true);
+    const page = pdf.addPage([INTERIOR_SPREAD.pageWidth, INTERIOR_SPREAD.pageHeight]);
+    page.drawRectangle({
+      x: 0,
+      y: 0,
+      width: INTERIOR_SPREAD.pageWidth,
+      height: INTERIOR_SPREAD.pageHeight,
+      color: rgb(0.98, 0.97, 0.94),
+    });
+    page.drawImage(image, {
+      x: fit.x,
+      y: fit.y,
+      width: fit.width,
+      height: fit.height,
+    });
+    drawMockOverlay({
+      page,
+      bookPage,
+      pageWidth: INTERIOR_SPREAD.pageWidth,
+      pageHeight: INTERIOR_SPREAD.pageHeight,
+    });
   }
 
   return pdf.save();

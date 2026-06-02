@@ -22,7 +22,7 @@ https://jonahubm.github.io/wimmelbuchgenerator/
 - Generate two local mock variants in the browser, or two guarded live AI variants through Vercel API routes.
 - Revise a selected generated variant up to two times before adding it to the book.
 - Add selected pages into a sequential book queue.
-- Export the current book as a print-oriented hardcover PDF with a full cover wrap, intro page, two-page Wimmel spreads, and backcover target legend.
+- Export the current book as a print-oriented hardcover PDF with a full cover wrap, landscape intro spread, full landscape Wimmel spreads, and backcover target legend.
 - Protect test deployments with a shared access code, a server-side AI kill switch, and a browser-session usage cap.
 
 The mock generator remains available without API keys. Real AI generation requires Vercel environment variables and must not be hosted through GitHub Pages.

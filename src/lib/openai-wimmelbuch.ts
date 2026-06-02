@@ -283,7 +283,7 @@ export function buildWimmelbuchPrompt({
     "Do not write character names anywhere in the image. No name tags, no labels, no captions, no text on clothing or hats.",
     "Avoid photorealism. The result should be a coherent illustrated Wimmelbuch page, not a collage and not a UI mockup.",
     `Mandatory hidden targets: include all ${activeCharacters.length} listed recurring search targets in the final image. Do not omit any configured target, even if the page is crowded.`,
-    "Place the following recurring search targets naturally in the image, proportional to the real scene, and findable only by looking. Do not make small objects person-sized. Do not shrink large vehicles or landmarks into toy scale unless the user explicitly says they are toys. No labels, arrows, circles, frames, foreground portraits, or obvious display poses:",
+    "Place the following recurring search targets naturally in the image, proportional to the real scene, and findable only by looking. Do not make small objects person-sized. Do not shrink large vehicles or landmarks into toy scale unless the user explicitly says they are toys. No labels, arrows, red circles, colored rings, target outlines, magnifier marks, frames, foreground portraits, or obvious display poses:",
     roster,
     "Mandatory inclusion checklist for the final image:",
     mandatoryChecklist,
