@@ -1,18 +1,14 @@
 import { PDFDocument, StandardFonts, degrees, rgb } from "pdf-lib";
 import {
-  BookPage,
-  ProjectConfig,
-  SearchTarget,
   characterInitials,
   dataUrlBase64,
   dataUrlMimeType,
   targetKindLabels,
 } from "@/lib/wimmelbuch";
-
-const POINTS_PER_MM = 72 / 25.4;
+import type { BookPage, ProjectConfig, SearchTarget } from "@/lib/wimmelbuch";
 
 function mm(value: number) {
-  return value * POINTS_PER_MM;
+  return (value * 72) / 25.4;
 }
 
 const COVER_WRAP = {
