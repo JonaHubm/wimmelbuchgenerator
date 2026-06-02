@@ -5,7 +5,7 @@ A full-stack Next.js application for creating personalized hidden-object picture
 Live app:
 
 ```text
-Vercel production deployment
+https://wimmelbuch.vercel.app/
 ```
 
 Static demo fallback:
