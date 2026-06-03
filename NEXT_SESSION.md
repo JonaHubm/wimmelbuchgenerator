@@ -25,6 +25,7 @@ The current MVP is a Next.js 16 App Router app with a browser mock generator and
 - Revision flow for selected generated pages.
 - Hardcover PDF export with:
   - first page cover wrap: `475 x 332 mm`;
+  - cover image restricted to the front-cover panel only;
   - landscape intro spread: `426 x 303 mm`;
   - one generated image per full landscape Wimmel spread: `426 x 303 mm`;
   - no printed target-marker overlays;

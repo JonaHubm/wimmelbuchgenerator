@@ -343,35 +343,51 @@ export async function createBookPdf(project: ProjectConfig, pages: BookPage[], o
     width: COVER_WRAP.panelWidth,
     height: COVER_WRAP.panelHeight,
   };
-  const frontImageArea = {
-    x: frontPanel.x,
-    y: 0,
-    width: frontPanel.width + COVER_WRAP.bleed,
-    height: COVER_WRAP.height,
-  };
+  const coverBackground = rgb(0.96, 0.95, 0.91);
 
   cover.drawRectangle({
     x: 0,
     y: 0,
     width: COVER_WRAP.width,
     height: COVER_WRAP.height,
-    color: rgb(0.96, 0.95, 0.91),
+    color: coverBackground,
   });
   cover.drawRectangle({
     x: 0,
     y: 0,
     width: spinePanel.x,
     height: COVER_WRAP.height,
-    color: rgb(0.96, 0.95, 0.91),
+    color: coverBackground,
   });
   await drawFullBleedImage({
     pdf,
     page: cover,
     dataUrl: coverImage,
-    x: frontImageArea.x,
-    y: frontImageArea.y,
-    width: frontImageArea.width,
-    height: frontImageArea.height,
+    x: frontPanel.x,
+    y: frontPanel.y,
+    width: frontPanel.width,
+    height: frontPanel.height,
+  });
+  [
+    { x: 0, y: 0, width: frontPanel.x, height: COVER_WRAP.height },
+    {
+      x: frontPanel.x + frontPanel.width,
+      y: 0,
+      width: COVER_WRAP.width - frontPanel.x - frontPanel.width,
+      height: COVER_WRAP.height,
+    },
+    { x: frontPanel.x, y: 0, width: frontPanel.width, height: frontPanel.y },
+    {
+      x: frontPanel.x,
+      y: frontPanel.y + frontPanel.height,
+      width: frontPanel.width,
+      height: COVER_WRAP.height - frontPanel.y - frontPanel.height,
+    },
+  ].forEach((mask) => {
+    cover.drawRectangle({
+      ...mask,
+      color: coverBackground,
+    });
   });
   cover.drawRectangle({
     x: spinePanel.x,

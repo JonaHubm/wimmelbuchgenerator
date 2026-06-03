@@ -88,7 +88,7 @@ The MVP should support private testing on Vercel and prepare the product for a l
   - back cover + spine + front cover;
   - no crop marks.
 - The cover should include:
-  - selected cover image;
+  - selected cover image only inside the front-cover panel;
   - readable title overlay;
   - creator;
   - spine title;
@@ -99,6 +99,7 @@ The MVP should support private testing on Vercel and prepare the product for a l
   - page size: `426 x 303 mm`;
   - intended trim: A4 + A4 spread with 3 mm bleed;
   - one generated Wimmelbuch image spans one full landscape spread.
+- The back cover, spine, and outer cover wrap bleed must not show any crop from the selected cover image.
 - PDF export must not draw red circles, target outlines, or marker boxes around hidden targets.
 - Existing generated images with baked-in circles must be regenerated.
 
