@@ -80,12 +80,13 @@ src/components/scene-preview.tsx
 src/lib/access-control.ts
 src/lib/wimmelbuch.ts
 src/lib/pdf-export.ts
+Requirements/Wimmelbuch_App.md
 Requirements/WIMMELBUCH_RESEARCH_CONTEXT.md
 ```
 
 ## Product Research
 
-The latest product and market research from `Requirements/Wimmelbuch_App.pptx` is summarized in [Requirements/WIMMELBUCH_RESEARCH_CONTEXT.md](./Requirements/WIMMELBUCH_RESEARCH_CONTEXT.md). Read it before changing the product model, legal consent flow, print/export workflow, or roadmap.
+The app requirements are maintained in [Requirements/Wimmelbuch_App.md](./Requirements/Wimmelbuch_App.md). Product and market research context is summarized in [Requirements/WIMMELBUCH_RESEARCH_CONTEXT.md](./Requirements/WIMMELBUCH_RESEARCH_CONTEXT.md). Read both before changing the product model, legal consent flow, print/export workflow, or roadmap.
 
 ## Deployment
 

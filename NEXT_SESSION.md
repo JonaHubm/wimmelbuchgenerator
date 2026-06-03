@@ -70,7 +70,7 @@ Results:
 
 - No real secrets are tracked. Only `.env.example` is versioned.
 - `.DS_Store` files exist locally but are ignored and not tracked.
-- `Requirements/Wimmelbuch_App.pptx` is tracked and is about 10 MB. Keep it if the repo should contain source requirements. Move it out or use Git LFS later if the app repo should stay lightweight.
+- Requirements now live in `Requirements/Wimmelbuch_App.md`; the large slide deck has been removed from the repo.
 - The current session cap is still a lightweight browser-session guard, not a hard global billing limit.
 - The app currently stores work in memory only. Refreshing can still lose a project.
 - Existing generated images that already contain red circles or labels need to be regenerated; those markings are baked into image pixels.

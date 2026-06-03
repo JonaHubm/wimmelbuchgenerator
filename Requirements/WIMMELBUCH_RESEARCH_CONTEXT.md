@@ -1,6 +1,6 @@
 # Wimmelbuch Research Context
 
-Source: `Requirements/Wimmelbuch_App.pptx`  
+Source: `Requirements/Wimmelbuch_App.md`
 Created for reusable agent context. This is a product/planning synthesis, not legal advice.
 
 ## Product Thesis
