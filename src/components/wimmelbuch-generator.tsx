@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { ChangeEvent, useMemo, useState } from "react";
 import { BookPageThumb, ScenePreview } from "@/components/scene-preview";
+import { apiRequestErrorMessage, readApiResponse } from "@/lib/api-client";
 import {
   GenerateCharacterResponse,
   GeneratePageResponse,
@@ -110,41 +111,6 @@ function jsonPayloadBytes(value: unknown) {
 
 function formatBytes(bytes: number) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
-
-function nonJsonErrorMessage(response: Response, body: string, fallback: string) {
-  if (response.status === 401) {
-    return "Private access expired or is missing. Open /access again and enter the passcode.";
-  }
-
-  if (response.status === 413) {
-    return "The image request is too large for Vercel. Use fewer/lower-resolution references or re-upload smaller images.";
-  }
-
-  if (response.status === 504) {
-    return "The generation timed out on Vercel. Try low quality or fewer references.";
-  }
-
-  if (body.trim().startsWith("<!DOCTYPE")) {
-    return `${fallback} The server returned an HTML error page instead of JSON. This usually means the request was too large, timed out, or hit a deployment/auth error.`;
-  }
-
-  return `${fallback} Server returned ${response.status} ${response.statusText || "without JSON details"}.`;
-}
-
-async function readApiResponse<T>(response: Response, fallback: string) {
-  const contentType = response.headers.get("content-type") ?? "";
-  const body = await response.text();
-
-  if (!contentType.includes("application/json")) {
-    throw new Error(nonJsonErrorMessage(response, body, fallback));
-  }
-
-  try {
-    return JSON.parse(body) as T;
-  } catch {
-    throw new Error(`${fallback} The server returned invalid JSON.`);
-  }
 }
 
 function FieldLabel({ children }: { children: React.ReactNode }) {
@@ -400,7 +366,7 @@ export function WimmelbuchGenerator({ initialAiStatus }: { initialAiStatus: Publ
       );
       setCharacterStatus((current) => ({ ...current, [character.id]: "ready" }));
     } catch (characterError) {
-      setError(characterError instanceof Error ? characterError.message : "Target reference generation failed");
+      setError(apiRequestErrorMessage(characterError, "Target reference generation failed."));
       setCharacterStatus((current) => ({ ...current, [character.id]: "error" }));
     }
   }
@@ -541,7 +507,7 @@ export function WimmelbuchGenerator({ initialAiStatus }: { initialAiStatus: Publ
       setStatus("ready");
       setPhase(1);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Generation failed");
+      setError(apiRequestErrorMessage(requestError, "Generation failed."));
       setWarning("");
       setStatus("error");
     }

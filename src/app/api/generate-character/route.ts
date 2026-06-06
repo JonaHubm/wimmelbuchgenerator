@@ -69,16 +69,9 @@ export async function POST(request: NextRequest) {
     size: "1024x1024",
     output_format: "png",
   };
-  let response = await fetch("https://api.openai.com/v1/images/generations", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(openAiRequest),
-  });
+  let response: Response;
 
-  if (!response.ok && shouldRetryOpenAiResponse(response)) {
+  try {
     response = await fetch("https://api.openai.com/v1/images/generations", {
       method: "POST",
       headers: {
@@ -87,6 +80,23 @@ export async function POST(request: NextRequest) {
       },
       body: JSON.stringify(openAiRequest),
     });
+
+    if (!response.ok && shouldRetryOpenAiResponse(response)) {
+      response = await fetch("https://api.openai.com/v1/images/generations", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(openAiRequest),
+      });
+    }
+  } catch (error) {
+    console.error("OpenAI target reference generation fetch failed", error);
+    return NextResponse.json(
+      { ai: aiStatus, error: `${OPENAI_TARGET_ERROR} The server could not reach OpenAI or the request was interrupted.` },
+      { status: 502 },
+    );
   }
 
   const payload = await readOpenAiImagePayload(response);

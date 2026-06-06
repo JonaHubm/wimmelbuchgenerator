@@ -184,7 +184,8 @@ export async function POST(request: NextRequest) {
           quality,
         },
       };
-    } catch {
+    } catch (error) {
+      console.error("OpenAI page variant generation failed", { error, index });
       return { ok: false, status: 502, error: OPENAI_PAGE_ERROR };
     }
   }

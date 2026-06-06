@@ -2,6 +2,7 @@
 
 import { FormEvent, useState } from "react";
 import { BookOpen, Loader2, LockKeyhole } from "lucide-react";
+import { apiRequestErrorMessage, readApiResponse } from "@/lib/api-client";
 
 export default function AccessPage() {
   const [passcode, setPasscode] = useState("");
@@ -21,7 +22,7 @@ export default function AccessPage() {
         },
         method: "POST",
       });
-      const payload = await response.json();
+      const payload = await readApiResponse<{ error?: string; ok?: boolean }>(response, "Access failed.");
 
       if (!response.ok) {
         throw new Error(typeof payload?.error === "string" ? payload.error : "Access failed.");
@@ -29,7 +30,7 @@ export default function AccessPage() {
 
       window.location.assign("/");
     } catch (accessError) {
-      setError(accessError instanceof Error ? accessError.message : "Access failed.");
+      setError(apiRequestErrorMessage(accessError, "Access failed."));
     } finally {
       setIsSubmitting(false);
     }
